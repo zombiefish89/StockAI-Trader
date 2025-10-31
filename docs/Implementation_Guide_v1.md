@@ -50,3 +50,129 @@
    - 根据用户反馈迭代功能。
 
 该文档汇总了 v1.0 MVP 的核心实施思路，可作为你开发时的指南.
+
+## 目录结构示例
+以下是一个建议的项目目录结构，用于组织数据层、分析层和接口层：
+
+```
+StockAI-Trader/
+├── datahub/
+│   ├── __init__.py
+│   ├── fetcher.py           # 从数据源异步拉取行情和资金数据
+│   ├── cache.py             # 本地缓存（Parquet/SQLite）管理
+│   ├── indicators.py        # 使用 pandas_ta/ta-lib 计算技术指标
+├── engine/
+│   ├── __init__.py
+│   ├── analyzer.py          # 整合指标，输出信号打分
+│   ├── rules.py             # 组合不同类型信号的权重和决策规则
+│   ├── report.py            # 将结构化结果渲染为文本报告
+├── api.py                   # FastAPI 应用入口，暴露 /analyze 接口
+├── frontend/                # Vue3 前端源码（可放在单独仓库）
+│   ├── src/
+│   │   ├── components/
+│   │   ├── views/
+│   │   └── ...
+│   └── package.json
+└── README.md
+```
+
+## 关键函数接口设计
+以下是些常用函数的接口签名，便于后继编码时相互符合：
+
+- `fetcher.get_latest_candles(ticker: str, start: datetime, end: datetime) -> pandas.DataFrame`：从数据源或缓存拉取线线数据，保证不缺流多有.
+- `indicators.compute_all(df: pandas.DataFrame) -> Dict[str, float]`：在线数据上计算所有所需的指标，包括 EMA, RSI, MACD, ATR, KDJ_J, BB_pos 等，返回一个具名值对容器。
+- `analyzer.score_signals(features: Dict[str, float]) -> Dict[str, float]`：根据指标特征计算趋势分、动量分、回调分，并进行标准化和带权求和。
+- `rules.generate_decision(scores: Dict[str, float], price_info: Dict[str, float]) -> Dict`：根据信号打分和当前价格信息，判定算略方向（走多/做空/观望）和建议的进场价、止损价和目标价区间。
+- `report.render(decision: Dict) -> str`：将决策和论据结构化结果转化成自然语言的文本报告，包含判方利容与风险提示。
+
+## API 接口示例
+这里给出 FastAPI 接口的积参和回应格式，便于前后端延传和自动代码生成。
+
+- **请求**：`POST /analyze`
+  - **body**（JSON）：
+    ```json
+    {
+      "ticker": "HOOD",
+      "timeframe": "1d",        // 时间分类：1m/5m/1h/1d
+      "start": "2025-10-01",    // 可选，传入准备的起始日期
+      "end": "2025-10-31"        // 可选，结束日期
+    }
+    ```
+- **响应**（JSON）：
+    ```json
+    {
+      "ticker": "HOOD",
+      "as_of": "2025-10-31T14:12:00+09:00",
+      "action": "buy",               // buy | sell | hold
+      "entry": 145.5,
+      "stop": 135.0,
+      "targets": [152, 155],
+      "confidence": 0.72,
+      "signals": {
+        "trend": {"ema20_above_50": true, "adx": 24.1, "anchored_vwap_ok": true},
+        "momentum": {"rsi": 68.3, "zscore_rsi": 1.4, "macd_cross": "bullish"},
+        "revert": {"bb_position": 0.78, "kdj_j": 102.2}
+      },
+      "rationale": [
+        "\u591a\u5934\u73af\u5883\u786e\u7acb (EMA20>EMA50>EMA200, ADX>20)",
+        "\u52a8\u91cf\u5f3a\uff0c\u4f46 RSI \u5206\u4f4d\u504f\u9ad8\uff0c\u77ed\u7ebf\u6709\u56de\u843d\u6982\u7387",
+        "\u5efa\u8bae\u56de\u8e29 MA20/\u524d\u9ad8\u9644\u8fd1\u4f4e\u5438\uff0c\u5206\u6279\u6b62\u76ca"
+      ],
+      "risk_notes": ["\u77ed\u7ebf\u8d85\u4e70", "\u5982\u653e\u91cf\u8dcc\u7834 MA20 \u9700\u51cf\u4ed3\u6216\u64a4\u9000"],
+      "latency_ms": 640
+    }
+    ```
+
+## 信号打分例码
+下面是一个简单的信号打分代码示例，帮助 Codex 快速理解怎么计算自动分值。
+
+```python
+# 环境过滤
+bull_env = (ema20 > ema50 > ema200) and (adx > 20) and (price > anchored_vwap_month)
+
+# 动量打分
+mom_score = 0.0
+if macd_cross == "bullish":
+    mom_score += 0.5
+elif macd_cross == "bearish":
+    mom_score -= 0.5
+
+# RSI 标准分值对自身历史进行 zscore
+if rsi_zscore < 1.0:
+    mom_score += 0.3
+elif rsi_zscore > 2.0:
+    mom_score -= 0.2
+
+# 回调信号
+revert_score = 0.0
+if 0.4 <= bb_pos <= 0.6:
+    revert_score += 0.3  # 近中或下轮保质点
+elif bb_pos > 0.9:
+    revert_score -= 0.2
+
+if kdj_j < 90:
+    revert_score += 0.2
+elif kdj_j > 110:
+    revert_score -= 0.2
+
+# 总分
+score = 0.5 * (1 if bull_env else -1) + 0.3 * mom_score + 0.2 * revert_score
+
+# 根据总分定义操作
+if score > 0.4:
+    action = "buy"
+elif score < -0.4:
+    action = "sell"
+else:
+    action = "hold"
+
+# 价位计算可以采用 ATR 和前高/MA20 来计算 entry, stop, target
+```
+
+## 缓存更新逻辑
+
+1. **常驻数据**：将日线和上一个平短周的分钟线数据提前打包保存到 Parquet/SQLite，设置 TTL (24h我0月)。
+2. **新鲜数据**：在用户发起分析时，先检查缓存中最后一条 K 线的时间戳，如果与当前时间相差超过预定间隔（例如 1 分钟），则只拉取此缺句范围内的新数据，更新缓存。
+3. **微步减能**：算指标时只重算发生变化的线数据缓血理线数据缓缓存数据分析数据后复盘。
+4. **异步拉取**：如果在本次分析中需要不同时间段或多种数据源，可将 fetcher 函数进行异步执行，提高总体响较性能。
+  
