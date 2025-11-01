@@ -37,6 +37,11 @@
     </p>
 
     <AnalysisResult v-if="result" :data="result" />
+
+    <MacroOverview />
+    <WatchlistManager />
+    <OpportunityScanner />
+    <DailyReportViewer />
   </main>
 </template>
 
@@ -46,6 +51,10 @@ import axios from "axios";
 import AnalysisResult, {
   AnalysisResultPayload,
 } from "./components/AnalysisResult.vue";
+import MacroOverview from "./components/MacroOverview.vue";
+import WatchlistManager from "./components/WatchlistManager.vue";
+import DailyReportViewer from "./components/DailyReportViewer.vue";
+import OpportunityScanner from "./components/OpportunityScanner.vue";
 
 interface AnalysisForm {
   ticker: string;

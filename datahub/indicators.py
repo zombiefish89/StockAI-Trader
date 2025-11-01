@@ -1,4 +1,4 @@
-"""Indicator computation utilities."""
+"""技术指标计算工具模块。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class IndicatorSnapshot:
+    """指标快照数据结构。"""
     features: Dict[str, Any]
 
 
@@ -125,7 +126,7 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
     adx = dx.rolling(period).mean()
-    return adx.fillna(method="bfill")
+    return adx.bfill()
 
 
 def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[pd.Series, pd.Series]:
@@ -156,7 +157,7 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(method="bfill")
+    return rsi.bfill()
 
 
 def _zscore(series: pd.Series, window: int) -> pd.Series:

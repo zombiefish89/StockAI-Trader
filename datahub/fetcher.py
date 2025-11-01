@@ -1,8 +1,8 @@
 """
-Market data fetchers with local caching and freshness validation.
+行情数据抓取模块，封装本地缓存与新鲜度校验。
 
-The module wraps yfinance download calls inside asyncio-friendly helpers so
-that API handlers can await results without blocking the event loop.
+通过将 yfinance 调用包裹为兼容 asyncio 的结构，
+使得 API 处理流程在等待网络时不会阻塞事件循环。
 """
 
 from __future__ import annotations
@@ -10,28 +10,49 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from functools import lru_cache
+from typing import Any, Dict, Optional, Sequence
 
 import pandas as pd
 from pandas import Series
 import yfinance as yf
 
 from .cache import DataCache
+from .providers import (
+    CandleProvider,
+    ProviderError,
+    YFinanceProvider,
+    default_providers,
+)
 
 logger = logging.getLogger(__name__)
 
 INTERVAL_TTL = {
-    "1m": 60 * 3,
-    "5m": 60 * 10,
-    "15m": 60 * 20,
-    "1h": 60 * 60,
+    "1m": 60,
+    "5m": 60 * 3,
+    "15m": 60 * 10,
+    "1h": 60 * 45,
     "1d": 60 * 60 * 6,
 }
 
+PROVIDER_TTL_OVERRIDES: Dict[str, Dict[str, int]] = {
+    "akshare": {
+        "1m": 45,
+        "5m": 60 * 2,
+        "15m": 60 * 10,
+        "30m": 60 * 15,
+        "1h": 60 * 30,
+    },
+    "akshare_us": {
+        "1d": 60 * 60 * 6,
+    },
+}
 
-def _select_cache(interval: str) -> DataCache:
-    ttl = INTERVAL_TTL.get(interval, 60 * 60 * 24)
-    return DataCache(base_dir="cache", ttl_seconds=ttl)
+
+def _select_cache(interval: str, provider: str) -> DataCache:
+    base_ttl = INTERVAL_TTL.get(interval, 60 * 60 * 24)
+    provider_ttl = PROVIDER_TTL_OVERRIDES.get(provider, {}).get(interval, base_ttl)
+    return DataCache(base_dir="cache", ttl_seconds=provider_ttl)
 
 
 def _ensure_datetime(value: Optional[str | datetime]) -> Optional[datetime]:
@@ -100,77 +121,113 @@ async def get_latest_candles(
     interval: str = "1d",
     use_cache: bool = True,
     force_refresh: bool = False,
+    providers: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    """Fetch OHLCV candles for a ticker, merging cache with remote data."""
+    """获取股票的 OHLCV 数据，并合并本地缓存及多提供方数据。"""
 
     interval = interval or "1d"
-    cache = _select_cache(interval)
     start_ts = _ensure_datetime(start)
     end_ts = _ensure_datetime(end)
 
-    cached_df: Optional[pd.DataFrame] = None
-    if use_cache and not force_refresh:
-        cached_df = cache.load(ticker, interval)
-        if cached_df is not None:
-            cached_df = _normalize_dataframe(cached_df)
+    provider_sequence = _resolve_providers(ticker, interval, providers)
+    last_error: Optional[Exception] = None
 
-    should_refresh = force_refresh or _needs_refresh(cached_df, interval, end_ts)
+    for provider in provider_sequence:
+        cache = _select_cache(interval, provider.name)
+        cached_df: Optional[pd.DataFrame] = None
 
-    if should_refresh:
-        fresh_df = await asyncio.to_thread(
-            _download_candles,
-            ticker,
-            start_ts,
-            end_ts,
-            interval,
-        )
-        fresh_df = _normalize_dataframe(fresh_df)
+        if use_cache:
+            cached_df = cache.load(ticker, interval, provider=provider.name)
+            if cached_df is not None:
+                cached_df = _normalize_dataframe(cached_df)
+                if not force_refresh and not _needs_refresh(cached_df, interval, end_ts):
+                    clipped = _clip_dataframe(cached_df, start_ts, end_ts)
+                    clipped.attrs["source"] = provider.name
+                    return clipped
+
+        try:
+            fresh_df = await asyncio.to_thread(
+                provider.fetch_candles,
+                ticker,
+                start_ts,
+                end_ts,
+                interval,
+            )
+            fresh_df = _normalize_dataframe(fresh_df)
+        except ProviderError as exc:
+            logger.warning("数据源 %s 返回错误：%s", provider.name, exc)
+            last_error = exc
+            if cached_df is not None and not cached_df.empty:
+                logger.info("使用 %s 的缓存数据作为降级。", provider.name)
+                clipped = _clip_dataframe(cached_df, start_ts, end_ts)
+                clipped.attrs["source"] = provider.name
+                return clipped
+            continue
+        except Exception as exc:  # pragma: no cover - 网络错误等
+            logger.exception("数据源 %s 异常：%s", provider.name, exc)
+            last_error = exc
+            if cached_df is not None and not cached_df.empty:
+                clipped = _clip_dataframe(cached_df, start_ts, end_ts)
+                clipped.attrs["source"] = provider.name
+                return clipped
+            continue
+
+        df = fresh_df
         if cached_df is not None and not cached_df.empty:
             combined = pd.concat([cached_df, fresh_df])
-            unique_df = combined[~combined.index.duplicated(keep="last")]
-            cache.store(ticker, interval, unique_df)
-            df = unique_df
-        else:
-            cache.store(ticker, interval, fresh_df)
-            df = fresh_df
-    else:
-        df = cached_df if cached_df is not None else pd.DataFrame()
+            df = combined[~combined.index.duplicated(keep="last")]
 
-    if df.empty:
-        return df
+        if df.empty:
+            continue
 
-    if start_ts:
-        df = df[df.index >= start_ts]
-    if end_ts:
-        df = df[df.index <= end_ts]
-    return df
+        cache.store(ticker, interval, df, provider=provider.name)
+        clipped = _clip_dataframe(df, start_ts, end_ts)
+        clipped.attrs["source"] = provider.name
+        return clipped
+
+    if last_error:
+        logger.error("所有数据源均不可用：%s", last_error)
+    return pd.DataFrame()
 
 
-def _download_candles(
-    ticker: str,
-    start: Optional[datetime],
-    end: Optional[datetime],
-    interval: str,
-) -> pd.DataFrame:
-    logger.info("Downloading %s candles for %s", interval, ticker)
-    kwargs: Dict[str, Any] = {
-        "interval": interval,
-        "auto_adjust": False,
-        "progress": False,
-        "threads": False,
-    }
-    if start:
-        kwargs["start"] = start
-    if end:
-        kwargs["end"] = end
-    df = yf.download(ticker, **kwargs)
-    if df is None:
-        return pd.DataFrame()
-    return df
+async def get_candles_batch(
+    tickers: Sequence[str],
+    start: Optional[datetime | str] = None,
+    end: Optional[datetime | str] = None,
+    interval: str = "1d",
+    use_cache: bool = True,
+    force_refresh: bool = False,
+    providers: Optional[Sequence[str]] = None,
+    concurrency: int = 4,
+) -> Dict[str, pd.DataFrame]:
+    """批量获取多只股票的行情数据。"""
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    tasks = []
+    results: Dict[str, pd.DataFrame] = {}
+
+    async def _worker(symbol: str) -> None:
+        async with semaphore:
+            df = await get_latest_candles(
+                ticker=symbol,
+                start=start,
+                end=end,
+                interval=interval,
+                use_cache=use_cache,
+                force_refresh=force_refresh,
+                providers=providers,
+            )
+            results[symbol] = df
+
+    for ticker in tickers:
+        tasks.append(asyncio.create_task(_worker(ticker)))
+
+    if tasks:
+        await asyncio.gather(*tasks)
+    return results
 
 
 async def get_quote_summary(ticker: str) -> Dict[str, Any]:
-    """Fetch basic quote/fundamental data with simple caching."""
+    """拉取基础报价 / 财报信息，并做轻量缓存。"""
     now = datetime.now(timezone.utc)
     cached = _QUOTE_CACHE.get(ticker)
     if cached and now - cached["timestamp"] < timedelta(minutes=15):
@@ -198,7 +255,7 @@ _QUOTE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _sanitize_payload(value: Any) -> Any:
-    """Convert nested structures into JSON-serializable payloads."""
+    """将复杂数据转换为可 JSON 序列化的基础类型。"""
     if value is None:
         return None
     if isinstance(value, (str, int, float, bool)):
@@ -218,3 +275,103 @@ def _sanitize_payload(value: Any) -> Any:
         return float(value)
     except (TypeError, ValueError):
         return str(value)
+
+
+def _clip_dataframe(
+    df: pd.DataFrame,
+    start_ts: Optional[datetime],
+    end_ts: Optional[datetime],
+) -> pd.DataFrame:
+    """根据起止时间截取数据。"""
+    clipped = df
+    if start_ts:
+        clipped = clipped[clipped.index >= start_ts]
+    if end_ts:
+        clipped = clipped[clipped.index <= end_ts]
+    return clipped
+
+
+def _is_china_equity(ticker: str) -> bool:
+    """判断是否为 A 股代码。"""
+    symbol = ticker.strip().lower()
+    if symbol.startswith(("sh", "sz", "bj")):
+        return True
+    if "." in symbol:
+        base, suffix = symbol.split(".", 1)
+        suffix = suffix.lower()
+        if suffix in {"ss", "sh", "sz", "bj"}:
+            return True
+        if suffix == "cn":
+            return True
+        if suffix == "szse":
+            return True
+    if len(symbol) == 6 and symbol.isdigit():
+        return True
+    return False
+
+
+def _is_us_equity(ticker: str) -> bool:
+    """粗略判断是否为美股代码。"""
+    symbol = ticker.strip().upper()
+    if _is_china_equity(symbol):
+        return False
+    if symbol.endswith(('.HK', '.SS', '.SZ', '.BJ')):
+        return False
+    if symbol.isalpha() and 1 <= len(symbol) <= 5:
+        return True
+    if "." in symbol:
+        suffix = symbol.split(".")[-1]
+        if suffix in {"O", "N", "A", "K", "Q"}:
+            return True
+    return False
+
+
+@lru_cache(maxsize=1)
+def _provider_registry() -> Dict[str, CandleProvider]:
+    """缓存默认提供方实例，避免重复初始化。"""
+    providers = list(default_providers())
+    registry: Dict[str, CandleProvider] = {}
+    for provider in providers:
+        registry[provider.name] = provider
+    return registry
+
+
+def _resolve_providers(
+    ticker: str,
+    interval: str,
+    requested: Optional[Sequence[str]],
+) -> Sequence[CandleProvider]:
+    """按优先级返回可用的数据源实例列表。"""
+    registry = _provider_registry()
+    ordered: list[CandleProvider] = []
+
+    def _maybe_add(provider: CandleProvider) -> None:
+        if provider.supports(interval) and provider not in ordered:
+            ordered.append(provider)
+
+    if requested:
+        for name in requested:
+            provider = registry.get(name)
+            if provider is None:
+                logger.warning("未识别的数据源：%s", name)
+                continue
+            _maybe_add(provider)
+    else:
+        if _is_china_equity(ticker):
+            preferred = ["akshare", "yfinance", "akshare_us"]
+        elif _is_us_equity(ticker):
+            preferred = ["yfinance", "akshare_us", "akshare"]
+        else:
+            preferred = ["yfinance", "akshare", "akshare_us"]
+        for name in preferred:
+            provider = registry.get(name)
+            if provider:
+                _maybe_add(provider)
+        for provider in registry.values():
+            _maybe_add(provider)
+
+    if not ordered:
+        logger.info("无可用数据源，使用 yfinance 作为后备。")
+        ordered.append(YFinanceProvider())
+
+    return ordered

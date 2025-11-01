@@ -16,11 +16,13 @@ dependencies = [
   "yfinance>=0.2.40",
   "pydantic>=2.6.0",
   "python-dateutil>=2.8.2",
+  "apscheduler>=3.10.4",
 ]
 
 [project.optional-dependencies]
 dev = ["httpx>=0.27.0", "pytest>=8.0.0"]
 storage = ["pyarrow>=14", "fastparquet>=2024.2.0"]
+china = ["akshare>=1.12.89"]
 
 [tool.setuptools]
 packages = ["engine", "datahub"]

@@ -18,6 +18,8 @@ venv/
 
 # Data/cache directories
 cache/
+data/
+reports/
 
 # FastAPI / Uvicorn logs
 *.log
@@ -31,4 +33,3 @@ frontend/.vite/
 .DS_Store
 .vscode/
 .idea/
-

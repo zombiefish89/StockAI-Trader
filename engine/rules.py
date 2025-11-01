@@ -1,18 +1,16 @@
-"""Decision rules mapping signal scores to actionable guidance."""
+"""将信号得分转换为可执行建议的规则引擎。"""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .analyzer import ScoreResult
-
 
 def generate_decision(
-    scores: ScoreResult,
+    scores,
     price_info: Dict[str, Any],
     features: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Convert scored signals into an actionable trading stance."""
+    """把打分结果转为具体的交易立场。"""
     total = scores.total
     price = price_info["price"]
     atr = price_info["atr"]

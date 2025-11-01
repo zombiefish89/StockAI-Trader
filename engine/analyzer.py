@@ -1,13 +1,16 @@
-"""Signal scoring logic assembling trend, momentum, and mean-reversion views."""
+"""根据趋势、动量与回调视角计算综合信号得分。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict
 
+from .rules import generate_decision
+
 
 @dataclass
 class ScoreResult:
+    """信号打分的封装结果。"""
     trend: float
     momentum: float
     revert: float
@@ -21,7 +24,7 @@ REVERT_WEIGHT = 0.2
 
 
 def score_signals(features: Dict[str, Any]) -> ScoreResult:
-    """Translate indicator features into weighted signal scores."""
+    """将指标特征映射为加权信号得分。"""
     trend_score = 0.0
     trend_flags: Dict[str, Any] = {}
 
@@ -131,7 +134,7 @@ def score_signals(features: Dict[str, Any]) -> ScoreResult:
 
 
 def build_price_info(features: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract price context used by the rules engine."""
+    """提取规则引擎所需的价格上下文。"""
     atr = features.get("atr") or 0.0
     price = features.get("price") or 0.0
     fallback_atr = max(price * 0.01, 0.1)
@@ -146,3 +149,14 @@ def build_price_info(features: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": features.get("timestamp"),
     }
 
+
+def analyze_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
+    """基于已计算的指标特征给出分析决策。"""
+    scores = score_signals(features)
+    price_info = build_price_info(features)
+    decision = generate_decision(scores, price_info, features)
+    return {
+        "scores": decision["scores"],
+        "price_info": price_info,
+        "decision": decision,
+    }

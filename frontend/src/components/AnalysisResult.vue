@@ -60,6 +60,7 @@ export interface AnalysisResultPayload {
   reference_price: number;
   atr: number;
   quote_snapshot?: Record<string, unknown> | null;
+  data_source?: string | null;
   scores: Record<string, number>;
   signals: Record<string, unknown>;
 }

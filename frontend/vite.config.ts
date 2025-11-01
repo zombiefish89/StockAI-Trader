@@ -14,6 +14,22 @@ export default defineConfig({
         target: "http://localhost:8000",
         changeOrigin: true,
       },
+      "/watchlist": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/reports": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/macro": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/scanner": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
     },
   },
 });
