@@ -7,6 +7,17 @@ AI 股票助手，帮助普通投资者在 1 分钟内获得结构化的交易�
 - 默认整合 yfinance（美股/港股优先）与 AkShare（A 股/美股备用）。如需启用 AkShare，请额外安装 `[china]`，并使用对应市场代码（A 股如 `sh600519`，美股直接 `AAPL`）。
 - 若需要禁用 AkShare 美股备选源，可设置环境变量 `AKSHARE_DISABLE_US=1`。
 - 宏观指数拉取默认缓存 30 分钟，若 yfinance 限速会自动回退到 AkShare 指数数据。
+- 如配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，宏观/指数数据会在 yfinance/AkShare 失败后继续尝试对应接口。
+
+### AI 总结（可选）
+- 将 `.env.example` 复制为 `.env`，填入所需的 API Key；项目启动时会自动加载 `.env`（依赖 `python-dotenv`）。
+- 配置环境变量：
+  - `LLM_PROVIDER`：`openai` / `qwen` / `gemini`。
+  - `OPENAI_API_KEY` / `QWEN_API_KEY`（或 `DASHSCOPE_API_KEY`）/ `GEMINI_API_KEY` 等。
+  - 可选 `LLM_MODEL`、`LLM_TIMEOUT` 等。
+- 启用后，批量分析和每日报告会生成额外的 AI 文本总结（失败时自动回退到模板化输出）。
+- 若希望默认启用，可设置 `LLM_AUTO_ANALYSIS=1`，前端也提供人工勾选的 “启用 AI 总结” 开关。
+- 未显式指定 `LLM_PROVIDER` 时，代码会按照 Qwen → OpenAI → Gemini 的顺序检测 API Key，并采用默认模型 `qwen3-max` / `gpt-5` / `gemini-2.5-pro`。
 - 启动服务：`uvicorn api:app --reload`。
 - 调用接口示例：
   ```bash

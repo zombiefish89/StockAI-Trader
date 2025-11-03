@@ -16,6 +16,14 @@ from typing import Dict, Iterable, Optional
 import pandas as pd
 import yfinance as yf
 
+from .akshare_api import (
+    AkShareUnavailable,
+    fetch_a_stock_daily,
+    fetch_a_stock_minute,
+    fetch_us_stock_daily,
+    is_available as akshare_is_available,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,11 +92,8 @@ class AkShareProvider(CandleProvider):
     _SUPPORTED = set(_MINUTE_MAP.keys()) | {"1d"}
 
     def __init__(self) -> None:
-        try:
-            import akshare as ak  # type: ignore
-        except ImportError as exc:  # pragma: no cover - 需额外依赖
-            raise ProviderError("缺少 akshare，请安装后再启用该数据源。") from exc
-        self._ak = ak
+        if not akshare_is_available():
+            raise ProviderError("缺少 akshare，请安装后再启用该数据源。")
 
     def supports(self, interval: str) -> bool:
         return interval in self._SUPPORTED
@@ -101,48 +106,19 @@ class AkShareProvider(CandleProvider):
         interval: str,
     ) -> pd.DataFrame:
         symbol = self._transform_symbol(ticker)
-        if interval == "1d":
-            df = self._ak.stock_zh_a_daily(symbol=symbol, adjust="")  # 原始数据
-            if df is None or df.empty:
-                raise ProviderError("AkShare 未返回日线数据。")
-            df.rename(
-                columns={
-                    "date": "Datetime",
-                    "open": "Open",
-                    "high": "High",
-                    "low": "Low",
-                    "close": "Close",
-                    "volume": "Volume",
-                },
-                inplace=True,
-            )
-            df["Datetime"] = pd.to_datetime(df["Datetime"])
-        else:
-            period = self._MINUTE_MAP[interval]
-            df = self._ak.stock_zh_a_minute(symbol=symbol, period=period)
-            if df is None or df.empty:
-                raise ProviderError("AkShare 未返回分钟级行情。")
-            df.rename(
-                columns={
-                    "day": "Datetime",
-                    "open": "Open",
-                    "high": "High",
-                    "low": "Low",
-                    "close": "Close",
-                    "volume": "Volume",
-                },
-                inplace=True,
-            )
-            df["Datetime"] = pd.to_datetime(df["Datetime"])
+        try:
+            if interval == "1d":
+                df = fetch_a_stock_daily(symbol)
+            else:
+                period = self._MINUTE_MAP[interval]
+                df = fetch_a_stock_minute(symbol, period)
+        except AkShareUnavailable as exc:
+            raise ProviderError(str(exc)) from exc
+        except Exception as exc:
+            raise ProviderError(f"AkShare 获取 {symbol}/{interval} 失败：{exc}") from exc
 
-        numeric_cols = ["Open", "High", "Low", "Close", "Volume"]
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        df.dropna(subset=["Datetime"], inplace=True)
-        df["Datetime"] = df["Datetime"].dt.tz_localize("Asia/Shanghai").dt.tz_convert("UTC")
-        df.set_index("Datetime", inplace=True)
-        df.sort_index(inplace=True)
+        if df is None or df.empty:
+            raise ProviderError("AkShare 返回的数据为空。")
 
         if start:
             df = df[df.index >= start]
@@ -192,11 +168,8 @@ class AkShareUSProvider(CandleProvider):
     _SUPPORTED = {"1d"}
 
     def __init__(self) -> None:
-        try:
-            import akshare as ak  # type: ignore
-        except ImportError as exc:  # pragma: no cover - 需额外依赖
-            raise ProviderError("缺少 akshare，请安装后再启用该数据源。") from exc
-        self._ak = ak
+        if not akshare_is_available():
+            raise ProviderError("缺少 akshare，请安装后再启用该数据源。")
 
     def supports(self, interval: str) -> bool:
         return interval in self._SUPPORTED
@@ -210,30 +183,15 @@ class AkShareUSProvider(CandleProvider):
     ) -> pd.DataFrame:
         symbol = ticker.upper()
         logger.info("使用 AkShare US 拉取 %s/%s", symbol, interval)
-        df = self._ak.stock_us_daily(symbol=symbol, adjust="")
+        try:
+            df = fetch_us_stock_daily(symbol)
+        except AkShareUnavailable as exc:
+            raise ProviderError(str(exc)) from exc
+        except Exception as exc:
+            raise ProviderError(f"AkShare US 获取 {symbol} 行情失败：{exc}") from exc
+
         if df is None or df.empty:
             raise ProviderError("AkShare US 未返回日线数据。")
-
-        df.rename(
-            columns={
-                "日期": "Datetime",
-                "开盘": "Open",
-                "最高": "High",
-                "最低": "Low",
-                "收盘": "Close",
-                "成交量": "Volume",
-            },
-            inplace=True,
-        )
-        df["Datetime"] = pd.to_datetime(df["Datetime"])
-        numeric_cols = ["Open", "High", "Low", "Close", "Volume"]
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        df.dropna(subset=["Datetime"], inplace=True)
-        df["Datetime"] = df["Datetime"].dt.tz_localize("America/New_York").dt.tz_convert("UTC")
-        df.set_index("Datetime", inplace=True)
-        df.sort_index(inplace=True)
 
         if start:
             df = df[df.index >= start]

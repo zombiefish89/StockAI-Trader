@@ -66,6 +66,17 @@
           <li v-for="item in topSectors" :key="item.name">
             {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
             <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
+            <span v-if="item.leaders?.length">
+              · 龙头：
+              {{
+                item.leaders
+                  .slice(0, 2)
+                  .map((lead) =>
+                    `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                  )
+                  .join("、")
+              }}
+            </span>
           </li>
         </ul>
       </section>
@@ -75,6 +86,17 @@
           <li v-for="item in weakSectors" :key="item.name">
             {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
             <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
+            <span v-if="item.leaders?.length">
+              · 龙头：
+              {{
+                item.leaders
+                  .slice(0, 2)
+                  .map((lead) =>
+                    `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                  )
+                  .join("、")
+              }}
+            </span>
           </li>
         </ul>
       </section>
@@ -87,6 +109,54 @@
         · 涨停：{{ breadth.limit_up ?? "-" }} · 跌停：{{ breadth.limit_down ?? "-" }}
       </p>
     </section>
+    <section v-if="Object.keys(sentiment).length">
+      <h3>情绪指标</h3>
+      <p v-if="sentiment.northbound_net !== undefined">
+        北向资金：
+        <span :class="(sentiment.northbound_net ?? 0) >= 0 ? 'up' : 'down'">
+          {{ ((sentiment.northbound_net ?? 0) / 1e8).toFixed(2) }} 亿
+        </span>
+      </p>
+      <p v-if="sentiment.advance_decline_ratio !== undefined">
+        涨跌比：{{ sentiment.advance_decline_ratio?.toFixed(2) }}
+      </p>
+    </section>
+    <section v-if="lhbList.length">
+      <h3>龙虎榜焦点</h3>
+      <ul>
+        <li v-for="item in lhbList" :key="item.code ?? item.name">
+          <strong>{{ item.name ?? item.code }}</strong>
+          <span v-if="item.net_buy !== undefined && item.net_buy !== null">
+            · 净{{ (item.net_buy ?? 0) >= 0 ? "买" : "卖" }}
+            <span :class="classifyMoney(item.net_buy)">{{ formatBillion(item.net_buy) }}</span>
+          </span>
+          <span v-if="item.change_pct !== undefined && item.change_pct !== null">
+            · 当日涨跌 {{ formatPercent((item.change_pct ?? 0) / 100) }}
+          </span>
+          <span v-if="item.times">
+            · 上榜 {{ item.times }} 次
+          </span>
+        </li>
+      </ul>
+    </section>
+    <section v-if="newsList.length">
+      <h3>市场新闻</h3>
+      <ul class="news">
+        <li v-for="item in newsList" :key="item.title">
+          <div class="news__header">
+            <a v-if="item.url" :href="item.url" target="_blank" rel="noopener">
+              {{ item.title }}
+            </a>
+            <span v-else>{{ item.title }}</span>
+          </div>
+          <p class="news__meta">
+            <span v-if="item.source">{{ item.source }}</span>
+            <span v-if="item.time"> · {{ formatNewsTime(item.time) }}</span>
+          </p>
+          <p v-if="item.summary" class="news__summary">{{ item.summary }}</p>
+        </li>
+      </ul>
+    </section>
   </section>
 </template>
 
@@ -94,10 +164,36 @@
 import { computed, onMounted, ref } from "vue";
 import axios from "axios";
 
+interface SectorLeader {
+  name?: string;
+  code?: string;
+  change_pct?: number;
+}
+
+interface LhbItem {
+  code?: string;
+  name?: string;
+  net_buy?: number | null;
+  buy_value?: number | null;
+  sell_value?: number | null;
+  times?: number | null;
+  change_pct?: number | null;
+  date?: string;
+}
+
+interface NewsItem {
+  title: string;
+  summary?: string | null;
+  time?: string | null;
+  source?: string | null;
+  url?: string | null;
+}
+
 interface MacroSectorItem {
   name: string;
   change_pct: number;
   fund_flow?: number | null;
+  leaders?: SectorLeader[];
 }
 
 interface MacroOverviewResponse {
@@ -109,6 +205,9 @@ interface MacroOverviewResponse {
   top_sectors: MacroSectorItem[];
   weak_sectors: MacroSectorItem[];
   breadth: Record<string, number | null>;
+  sentiment: Record<string, number | null>;
+  lhb: LhbItem[];
+  news: NewsItem[];
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -121,6 +220,9 @@ const indices = ref<MacroOverviewResponse["indices"]>({});
 const topSectors = ref<MacroSectorItem[]>([]);
 const weakSectors = ref<MacroSectorItem[]>([]);
 const breadth = ref<Record<string, number | null>>({});
+const sentiment = ref<Record<string, number | null>>({});
+const lhbList = ref<LhbItem[]>([]);
+const newsList = ref<NewsItem[]>([]);
 
 const loading = ref(false);
 const error = ref("");
@@ -149,6 +251,36 @@ function formatPercent(value: number) {
   }).format(value);
 }
 
+function formatBillion(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${(Math.abs(value) / 1e8).toFixed(2)} 亿`;
+}
+
+function classifyMoney(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "";
+  }
+  return value >= 0 ? "up" : "down";
+}
+
+function formatNewsTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 async function refresh() {
   loading.value = true;
   error.value = "";
@@ -164,6 +296,9 @@ async function refresh() {
     topSectors.value = data.top_sectors ?? [];
     weakSectors.value = data.weak_sectors ?? [];
     breadth.value = data.breadth ?? {};
+    sentiment.value = data.sentiment ?? {};
+    lhbList.value = data.lhb ?? [];
+    newsList.value = data.news ?? [];
   } catch (err) {
     error.value =
       err instanceof Error ? err.message : "宏观数据获取失败，请稍后重试。";
@@ -233,5 +368,34 @@ td {
 
 .down {
   color: #dc2626;
+}
+
+.news {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.news__header a {
+  color: #1d4ed8;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.news__header a:hover {
+  text-decoration: underline;
+}
+
+.news__meta {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.news__summary {
+  color: #475569;
+  margin-top: 0.25rem;
 }
 </style>

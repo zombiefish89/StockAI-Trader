@@ -172,10 +172,20 @@ async def get_latest_candles(
                 return clipped
             continue
 
-        df = fresh_df
+        df = fresh_df.copy()
+        df = df.loc[:, ~df.columns.duplicated()]
+        df = df.sort_index()
+        df = df.loc[~df.index.duplicated(keep="last")]
         if cached_df is not None and not cached_df.empty:
-            combined = pd.concat([cached_df, fresh_df])
-            df = combined[~combined.index.duplicated(keep="last")]
+            cached_df = cached_df.loc[~cached_df.index.duplicated(keep="last")]
+            try:
+                combined = pd.concat([cached_df, df], axis=0, join="outer", sort=True)
+            except ValueError:
+                cached_df = cached_df.loc[:, ~cached_df.columns.duplicated()]
+                combined = pd.concat([cached_df, df], axis=0, join="outer", sort=True)
+            combined = combined.loc[:, ~combined.columns.duplicated()]
+            combined.sort_index(inplace=True)
+            df = combined.groupby(level=0).last()
 
         if df.empty:
             continue

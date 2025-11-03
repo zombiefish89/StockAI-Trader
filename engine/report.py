@@ -49,12 +49,17 @@ def render_daily_report(
     details: Dict[str, Dict[str, Any]],
     macro: Optional[Dict[str, Any]] = None,
     opportunities: Optional[List[Dict[str, Any]]] = None,
+    ai_summary: Optional[str] = None,
 ) -> str:
     """根据批量分析结果输出每日报告文本。"""
 
     lines: List[str] = []
     lines.append(f"【日期】{date}")
     lines.append(f"【市场概览】{overview or '今日暂无整体概览信息'}")
+
+    if ai_summary:
+        lines.append("【AI 总结】")
+        lines.append(ai_summary)
 
     if highlights:
         lines.append("【重点关注】")
@@ -78,9 +83,19 @@ def render_daily_report(
             lines.append(f"- {overview_text}")
         top_sectors = macro.get("top_sectors", []) or []
         if top_sectors:
-            lines.append("- 领涨板块：" + "；".join(
-                f"{item.get('name')}({item.get('change_pct', 0):.2f}%)" for item in top_sectors[:3]
-            ))
+            formatted = []
+            for item in top_sectors[:3]:
+                text = f"{item.get('name')}({item.get('change_pct', 0):.2f}%)"
+                leaders = item.get("leaders") or []
+                if leaders:
+                    lead_text = "、".join(
+                        f"{lead.get('name', lead.get('code'))}({lead.get('change_pct', 0):.2f}%)"
+                        for lead in leaders[:2]
+                    )
+                    if lead_text:
+                        text += f" · 龙头：{lead_text}"
+                formatted.append(text)
+            lines.append("- 领涨板块：" + "；".join(formatted))
         weak_sectors = macro.get("weak_sectors", []) or []
         if weak_sectors:
             lines.append("- 领跌板块：" + "；".join(
@@ -91,6 +106,16 @@ def render_daily_report(
         decl = breadth.get("decline")
         if adv is not None and decl is not None:
             lines.append(f"- 涨跌家数：{adv} / {decl}")
+        sentiment = macro.get("sentiment", {}) or {}
+        north = sentiment.get("northbound_net")
+        if isinstance(north, (int, float)):
+            if north >= 0:
+                lines.append(f"- 北向资金净流入 {north/1e8:.2f} 亿")
+            else:
+                lines.append(f"- 北向资金净流出 {abs(north)/1e8:.2f} 亿")
+        ratio = sentiment.get("advance_decline_ratio")
+        if isinstance(ratio, (int, float)):
+            lines.append(f"- 涨跌比：{ratio:.2f}")
 
     lines.append("【个股详情】")
     for ticker, payload in details.items():

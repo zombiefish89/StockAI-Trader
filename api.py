@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
+import env  # noqa: F401
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from datahub.fetcher import get_candles_batch, get_latest_candles, get_quote_summary
@@ -20,6 +26,14 @@ from datahub.watchlist import Watchlist, load_watchlist, save_watchlist
 from engine.analyzer import analyze_snapshot
 from engine.macro_analyzer import summarize_for_report, summarize_macro
 from engine.report import render as render_report
+
+try:  # noqa: WPS433 - 可选依赖
+    from llm import LLMClient, LLMNotConfigured
+except Exception:  # pragma: no cover - LLM 模块缺失
+    LLMClient = None  # type: ignore
+    LLMNotConfigured = Exception  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisRequest(BaseModel):
@@ -69,6 +83,7 @@ class BatchAnalysisRequest(BaseModel):
     start: Optional[datetime] = Field(None, description="可选，起始日期时间")
     end: Optional[datetime] = Field(None, description="可选，结束日期时间")
     force_refresh: bool = Field(False, description="是否忽略缓存强制刷新数据")
+    use_llm: bool = Field(False, description="是否启用 LLM 总结")
 
 
 class BatchAnalysisResponse(BaseModel):
@@ -79,12 +94,14 @@ class BatchAnalysisResponse(BaseModel):
     latency_ms: int
     macro: Optional[Dict[str, Any]] = None
     opportunities: Optional[Dict[str, Any]] = None
+    ai_summary: Optional[str] = None
 
 
 class MacroSectorItem(BaseModel):
     name: str
     change_pct: float
     fund_flow: Optional[float] = None
+    leaders: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class MacroOverviewResponse(BaseModel):
@@ -96,6 +113,9 @@ class MacroOverviewResponse(BaseModel):
     top_sectors: List[MacroSectorItem]
     weak_sectors: List[MacroSectorItem]
     breadth: Dict[str, Any]
+    sentiment: Dict[str, Any]
+    lhb: List[Dict[str, Any]] = Field(default_factory=list)
+    news: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class OpportunityRequest(BaseModel):
@@ -135,6 +155,7 @@ class ReportSummary(BaseModel):
     latency_ms: int = 0
     macro: Optional[Dict[str, Any]] = None
     opportunities: Optional[Dict[str, Any]] = None
+    ai_summary: Optional[str] = None
 
 
 class ReportDetail(ReportSummary):
@@ -218,6 +239,7 @@ def _parse_report(data: Dict[str, Any]) -> ReportDetail:
         latency_ms=data.get("latency_ms", 0),
         macro=data.get("macro"),
         opportunities=data.get("opportunities"),
+        ai_summary=data.get("ai_summary"),
         results=data.get("results", {}),
     )
 
@@ -230,9 +252,34 @@ def _to_sector_items(items: List[Dict[str, Any]]) -> List[MacroSectorItem]:
                 name=str(item.get("name", "")),
                 change_pct=float(item.get("change_pct", 0.0)),
                 fund_flow=item.get("fund_flow"),
+                leaders=item.get("leaders") or [],
             )
         )
     return sector_items
+
+
+async def _maybe_generate_batch_llm_summary(
+    results: Dict[str, Any],
+    macro: Dict[str, Any],
+    opportunities: Dict[str, Any],
+) -> Optional[str]:
+    if not os.getenv("LLM_PROVIDER") or LLMClient is None:
+        return None
+    try:
+        client = LLMClient.from_env()
+    except LLMNotConfigured:
+        return None
+
+    payload = {
+        "results": results,
+        "macro": macro,
+        "opportunities": opportunities,
+    }
+    try:
+        return await asyncio.to_thread(client.summarize_batch_analysis, payload)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("批量分析 LLM 总结失败：%s", exc)
+        return None
 
 
 async def _run_single_analysis(
@@ -417,6 +464,7 @@ async def analyze_watchlist(payload: BatchAnalysisRequest) -> BatchAnalysisRespo
     macro_snapshot = await get_macro_snapshot()
     macro_summary = summarize_macro(macro_snapshot)
     macro_report = summarize_for_report(macro_summary)
+    macro_payload = jsonable_encoder(macro_report)
 
     opportunity_payload = await scan_opportunities(
         tickers=symbols,
@@ -425,6 +473,22 @@ async def analyze_watchlist(payload: BatchAnalysisRequest) -> BatchAnalysisRespo
         limit=10,
         force_refresh=payload.force_refresh,
     )
+    opportunity_payload_encoded = jsonable_encoder(opportunity_payload)
+
+    results_payload: Dict[str, Any] = {}
+    encoded = jsonable_encoder(results)
+    if isinstance(encoded, dict):
+        results_payload = encoded
+    else:
+        results_payload = results
+
+    ai_summary: Optional[str] = None
+    if payload.use_llm or os.getenv("LLM_AUTO_ANALYSIS") == "1":
+        ai_summary = await _maybe_generate_batch_llm_summary(
+            results=results_payload,
+            macro=macro_payload,
+            opportunities=opportunity_payload_encoded,
+        )
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     as_of_value = latest_timestamp or datetime.now(timezone.utc)
@@ -436,7 +500,8 @@ async def analyze_watchlist(payload: BatchAnalysisRequest) -> BatchAnalysisRespo
         failed=failed,
         latency_ms=latency_ms,
         macro=macro_report,
-        opportunities=opportunity_payload,
+        opportunities=opportunity_payload_encoded,
+        ai_summary=ai_summary,
     )
 
 
@@ -458,6 +523,9 @@ async def macro_overview() -> MacroOverviewResponse:
         top_sectors=top_items,
         weak_sectors=weak_items,
         breadth=report.get("breadth", {}),
+        sentiment=report.get("sentiment", {}),
+        lhb=summary.lhb,
+        news=summary.news,
     )
 
 
@@ -509,6 +577,7 @@ async def list_reports(limit: int = DEFAULT_REPORT_LIMIT) -> List[ReportSummary]
                 latency_ms=detail.latency_ms,
                 macro=detail.macro,
                 opportunities=detail.opportunities,
+                ai_summary=detail.ai_summary,
             )
         )
     return summaries

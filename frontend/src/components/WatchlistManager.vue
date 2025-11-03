@@ -30,6 +30,10 @@
     </div>
 
     <div class="actions">
+      <label class="toggle">
+        <input type="checkbox" v-model="useLLM" />
+        启用 AI 总结
+      </label>
       <button type="button" @click="runAnalysis" :disabled="batchLoading || !watchlist.length">
         {{ batchLoading ? "分析中..." : "批量分析" }}
       </button>
@@ -42,6 +46,9 @@
       <p class="muted">
         总耗时 {{ (batchSummary.latency_ms / 1000).toFixed(2) }} 秒。
         <span v-if="batchFailed.length">失败：{{ batchFailed.join(", ") }}</span>
+      </p>
+      <p v-if="batchSummary.ai_summary" class="ai-summary">
+        AI 总结：{{ batchSummary.ai_summary }}
       </p>
 
       <table>
@@ -87,6 +94,9 @@ interface BatchAnalysisResponse {
   results: Record<string, AnalysisResultPayload>;
   failed: string[];
   latency_ms: number;
+  macro?: Record<string, unknown>;
+  opportunities?: Record<string, unknown>;
+  ai_summary?: string | null;
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -100,6 +110,7 @@ const adding = ref(false);
 const batchLoading = ref(false);
 const batchData = ref<BatchAnalysisResponse | null>(null);
 const batchFailed = ref<string[]>([]);
+const useLLM = ref(false);
 
 const batchSummary = computed(() => batchData.value);
 const batchRows = computed(() => {
@@ -179,7 +190,9 @@ async function runAnalysis() {
   try {
     const { data } = await axios.post<BatchAnalysisResponse>(
       `${API_BASE}/watchlist/analyze`,
-      {}
+      {
+        use_llm: useLLM.value,
+      }
     );
     batchData.value = data;
     batchFailed.value = data.failed ?? [];
@@ -256,7 +269,22 @@ onMounted(() => {
 
 .actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #0f172a;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
 }
 
 .actions button {
@@ -266,6 +294,13 @@ onMounted(() => {
   background: linear-gradient(120deg, #22c55e, #16a34a);
   color: #fff;
   font-weight: 600;
+}
+
+.ai-summary {
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  color: #0f172a;
 }
 
 .status {

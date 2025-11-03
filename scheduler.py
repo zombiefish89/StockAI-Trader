@@ -10,12 +10,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import env  # noqa: F401
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi.encoders import jsonable_encoder
 from zoneinfo import ZoneInfo
 
 from datahub.fetcher import get_candles_batch
@@ -26,6 +30,12 @@ from datahub.watchlist import load_watchlist
 from engine.analyzer import analyze_snapshot
 from engine.macro_analyzer import summarize_for_report, summarize_macro
 from engine.report import render, render_daily_report
+
+try:  # noqa: WPS433 - 可选依赖
+    from llm import LLMClient, LLMNotConfigured
+except Exception:  # pragma: no cover - LLM 模块缺失
+    LLMClient = None  # type: ignore
+    LLMNotConfigured = Exception  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +99,10 @@ async def generate_daily_report(timeframe: str = "1d") -> Dict[str, Any]:
     macro_snapshot = await get_macro_snapshot()
     macro_summary = summarize_macro(macro_snapshot)
     macro_report = summarize_for_report(macro_summary)
+    macro_report_encoded = jsonable_encoder(macro_report)
 
     opportunity_payload = await scan_opportunities(direction="all", limit=10)
+    opportunity_payload_encoded = jsonable_encoder(opportunity_payload)
 
     overview = _build_overview(results)
     highlights = macro_summary.highlights + _pick_highlights(results)
@@ -98,6 +110,12 @@ async def generate_daily_report(timeframe: str = "1d") -> Dict[str, Any]:
 
     date_str = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
     generated_at = datetime.now(timezone.utc)
+
+    ai_summary = await _maybe_generate_llm_summary(
+        macro_report=macro_report_encoded,
+        opportunities=opportunity_payload_encoded,
+        stock_results=jsonable_encoder(results),
+    )
 
     body_text = render_daily_report(
         date=date_str,
@@ -115,6 +133,7 @@ async def generate_daily_report(timeframe: str = "1d") -> Dict[str, Any]:
         },
         macro=macro_report,
         opportunities=opportunity_payload.get("candidates", []),
+        ai_summary=ai_summary,
     )
 
     payload = {
@@ -130,6 +149,7 @@ async def generate_daily_report(timeframe: str = "1d") -> Dict[str, Any]:
         "as_of": (latest_ts or generated_at).isoformat(),
         "macro": macro_report,
         "opportunities": opportunity_payload,
+        "ai_summary": ai_summary,
     }
 
     _persist_report(payload, body_text)
@@ -200,6 +220,30 @@ def _collect_risks(results: Dict[str, Dict[str, Any]], limit: int = 5) -> List[s
             if len(risks) >= limit:
                 return risks
     return risks
+
+
+async def _maybe_generate_llm_summary(
+    macro_report: Dict[str, Any],
+    opportunities: Dict[str, Any],
+    stock_results: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    if not os.getenv("LLM_PROVIDER") or LLMClient is None:
+        return None
+    try:
+        client = LLMClient.from_env()
+    except LLMNotConfigured:
+        return None
+    payload = {
+        "macro": macro_report,
+        "opportunities": opportunities,
+        "results": stock_results,
+        "overview": macro_report.get("overview"),
+    }
+    try:
+        return await asyncio.to_thread(client.summarize_daily_report, payload)
+    except Exception as exc:  # pragma: no cover - 网络异常
+        logger.warning("LLM 总结失败：%s", exc)
+        return None
 
 
 def _persist_report(payload: Dict[str, Any], body: str) -> None:

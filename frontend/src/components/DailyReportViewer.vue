@@ -25,6 +25,11 @@
     <p v-if="error" class="status">{{ error }}</p>
 
     <div v-if="currentReport" class="report-body">
+      <section v-if="currentReport.ai_summary">
+        <h3>AI 总结</h3>
+        <p>{{ currentReport.ai_summary }}</p>
+      </section>
+
       <section>
         <h3>市场概览</h3>
         <p>{{ currentReport.market_overview || "暂无数据" }}</p>
@@ -60,6 +65,18 @@
                 :key="item.name"
               >
                 {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
+                <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
+                <span v-if="item.leaders?.length">
+                  · 龙头：
+                  {{
+                    item.leaders
+                      .slice(0, 2)
+                      .map((lead) =>
+                        `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                      )
+                      .join("、")
+                  }}
+                </span>
               </li>
             </ul>
           </div>
@@ -71,6 +88,76 @@
                 :key="item.name"
               >
                 {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
+                <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
+                <span v-if="item.leaders?.length">
+                  · 龙头：
+                  {{
+                    item.leaders
+                      .slice(0, 2)
+                      .map((lead) =>
+                        `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                      )
+                      .join("、")
+                  }}
+                </span>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <p v-if="currentReport.macro.breadth">
+          涨跌家数：{{ currentReport.macro.breadth.advance ?? "-" }} /
+          {{ currentReport.macro.breadth.decline ?? "-" }}
+        </p>
+        <p v-if="currentReport.macro.sentiment?.northbound_net !== undefined">
+          北向资金：
+          <span
+            :class="
+              (currentReport.macro.sentiment?.northbound_net ?? 0) >= 0 ? 'up' : 'down'
+            "
+          >
+            {{
+              ((currentReport.macro.sentiment?.northbound_net ?? 0) / 1e8).toFixed(2)
+            }}
+            亿
+          </span>
+        </p>
+        <p v-if="currentReport.macro.sentiment?.advance_decline_ratio !== undefined">
+          涨跌比：{{ currentReport.macro.sentiment?.advance_decline_ratio?.toFixed(2) }}
+        </p>
+        <div class="grid" v-if="macroLhb.length || macroNews.length">
+          <div v-if="macroLhb.length">
+            <h4>龙虎榜焦点</h4>
+            <ul>
+              <li v-for="item in macroLhb" :key="item.code ?? item.name">
+                <strong>{{ item.name ?? item.code }}</strong>
+                <span v-if="item.net_buy !== undefined && item.net_buy !== null">
+                  · 净{{ (item.net_buy ?? 0) >= 0 ? "买" : "卖" }}
+                  <span :class="classifyMoney(item.net_buy)">{{ formatBillion(item.net_buy) }}</span>
+                </span>
+                <span v-if="item.change_pct !== undefined && item.change_pct !== null">
+                  · 涨跌 {{ formatPercent((item.change_pct ?? 0) / 100) }}
+                </span>
+                <span v-if="item.times">
+                  · 上榜 {{ item.times }} 次
+                </span>
+              </li>
+            </ul>
+          </div>
+          <div v-if="macroNews.length">
+            <h4>市场新闻</h4>
+            <ul class="news">
+              <li v-for="item in macroNews" :key="item.title">
+                <div class="news__header">
+                  <a v-if="item.url" :href="item.url" target="_blank" rel="noopener">
+                    {{ item.title }}
+                  </a>
+                  <span v-else>{{ item.title }}</span>
+                </div>
+                <p class="news__meta">
+                  <span v-if="item.source">{{ item.source }}</span>
+                  <span v-if="item.time"> · {{ formatNewsTime(item.time) }}</span>
+                </p>
+                <p v-if="item.summary" class="news__summary">{{ item.summary }}</p>
               </li>
             </ul>
           </div>
@@ -148,11 +235,36 @@ type HighlightItem =
       summary: string;
     };
 
+interface SectorLeader {
+  name?: string;
+  code?: string;
+  change_pct?: number;
+}
+
+interface LhbEntry {
+  code?: string;
+  name?: string;
+  net_buy?: number | null;
+  change_pct?: number | null;
+  times?: number | null;
+}
+
+interface NewsEntry {
+  title: string;
+  summary?: string | null;
+  time?: string | null;
+  source?: string | null;
+  url?: string | null;
+}
+
 interface MacroSection {
   overview: string;
-  top_sectors?: { name: string; change_pct: number }[];
-  weak_sectors?: { name: string; change_pct: number }[];
-  breadth?: Record<string, number>;
+  top_sectors?: { name: string; change_pct: number; fund_flow?: number; leaders?: SectorLeader[] }[];
+  weak_sectors?: { name: string; change_pct: number; fund_flow?: number; leaders?: SectorLeader[] }[];
+  breadth?: Record<string, number | null>;
+  sentiment?: Record<string, number | null>;
+  lhb?: LhbEntry[];
+  news?: NewsEntry[];
 }
 
 interface OpportunitySection {
@@ -179,6 +291,7 @@ interface ReportSummary {
   latency_ms: number;
   macro?: MacroSection;
   opportunities?: OpportunitySection;
+  ai_summary?: string | null;
 }
 
 interface ReportDetail extends ReportSummary {
@@ -221,6 +334,9 @@ const opportunityRows = computed(() => {
   return currentReport.value.opportunities.candidates;
 });
 
+const macroLhb = computed(() => currentReport.value?.macro?.lhb ?? []);
+const macroNews = computed(() => currentReport.value?.macro?.news ?? []);
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
@@ -240,6 +356,36 @@ function formatPercent(value: number) {
 
 function highlightKey(item: HighlightItem) {
   return typeof item === "string" ? item : item.ticker;
+}
+
+function formatBillion(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${(Math.abs(value) / 1e8).toFixed(2)} 亿`;
+}
+
+function classifyMoney(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "";
+  }
+  return value >= 0 ? "up" : "down";
+}
+
+function formatNewsTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 async function fetchSummaries() {
@@ -358,5 +504,42 @@ onMounted(async () => {
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.up {
+  color: #16a34a;
+}
+
+.down {
+  color: #dc2626;
+}
+
+.news {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.news__header a {
+  color: #1d4ed8;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.news__header a:hover {
+  text-decoration: underline;
+}
+
+.news__meta {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.news__summary {
+  color: #475569;
+  margin-top: 0.25rem;
 }
 </style>
