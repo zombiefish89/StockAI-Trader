@@ -27,17 +27,23 @@
     </div>
 
     <section>
-      <h3>核心逻辑</h3>
-      <ul>
+      <h3>策略概要</h3>
+      <ul v-if="data.rationale.length">
         <li v-for="item in data.rationale" :key="item">
           {{ item }}
         </li>
       </ul>
+      <pre v-if="data.report" class="report">{{ data.report }}</pre>
     </section>
 
-    <section>
-      <h3>报告摘要</h3>
-      <pre class="report">{{ data.report }}</pre>
+    <section v-if="data.ai_short_term_summary">
+      <h3>AI 短线总结</h3>
+      <div class="ai-block" v-html="shortSummaryHtml"></div>
+    </section>
+
+    <section v-if="data.ai_long_term_summary">
+      <h3>AI 中长期分析</h3>
+      <div class="ai-block" v-html="longSummaryHtml"></div>
     </section>
   </section>
 </template>
@@ -63,6 +69,8 @@ export interface AnalysisResultPayload {
   data_source?: string | null;
   scores: Record<string, number>;
   signals: Record<string, unknown>;
+  ai_short_term_summary?: string | null;
+  ai_long_term_summary?: string | null;
 }
 
 const props = defineProps<{
@@ -99,6 +107,42 @@ const toPercent = (value: number) =>
     style: "percent",
     minimumFractionDigits: 0,
   }).format(value);
+
+const shortSummaryHtml = computed(() => renderMarkdown(props.data.ai_short_term_summary));
+const longSummaryHtml = computed(() => renderMarkdown(props.data.ai_long_term_summary));
+
+function renderMarkdown(content?: string | null): string {
+  if (!content) return "";
+  const escaped = content
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  const lines = escaped.split(/\r?\n/);
+  const items: string[] = [];
+  const paragraphs: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^[-*+]\s+/.test(trimmed)) {
+      items.push(`<li>${trimmed.replace(/^[-*+]\s+/, "")}</li>`);
+    } else if (/^\d+\.\s+/.test(trimmed)) {
+      items.push(`<li>${trimmed.replace(/^\d+\.\s+/, "")}</li>`);
+    } else {
+      paragraphs.push(trimmed.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>"));
+    }
+  }
+
+  const parts: string[] = [];
+  if (items.length) {
+    parts.push(`<ul>${items.join("\n")}</ul>`);
+  }
+  if (paragraphs.length) {
+    parts.push(paragraphs.map((p) => `<p>${p}</p>`).join(""));
+  }
+  return parts.join("" || "");
+}
 </script>
 
 <style scoped>
@@ -136,5 +180,14 @@ const toPercent = (value: number) =>
   border-radius: 8px;
   padding: 1rem;
   white-space: pre-wrap;
+}
+
+.ai-block {
+  background: #f8fafc;
+  border-left: 4px solid #2563eb;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  color: #0f172a;
+  line-height: 1.5;
 }
 </style>

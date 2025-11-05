@@ -65,6 +65,10 @@ class LLMClient:
         prompt = build_batch_analysis_prompt(payload)
         return self._chat(prompt)
 
+    def summarize_single_analysis(self, payload: Dict[str, Any], mode: str) -> str:
+        prompt = build_single_analysis_prompt(payload, mode)
+        return self._chat(prompt)
+
     # --- Internal helpers ---
 
     def _chat(self, prompt: str) -> str:
@@ -151,10 +155,38 @@ class LLMClient:
         if resp.status_code != 200:
             raise LLMError(f"Qwen 请求失败: {resp.text}")
         data = resp.json()
-        try:
-            return data["output"]["text"].strip()
-        except (KeyError, TypeError) as exc:
-            raise LLMError(f"Qwen 响应解析失败: {data}") from exc
+        output = data.get("output") if isinstance(data, dict) else None
+        if isinstance(output, dict):
+            text = output.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            choices = output.get("choices")
+            if isinstance(choices, list) and choices:
+                choice = choices[0] or {}
+                if isinstance(choice, dict):
+                    choice_text = choice.get("text")
+                    if isinstance(choice_text, str) and choice_text.strip():
+                        return choice_text.strip()
+                    message = choice.get("message")
+                    if isinstance(message, dict):
+                        msg_text = message.get("text")
+                        if isinstance(msg_text, str) and msg_text.strip():
+                            return msg_text.strip()
+                        content = message.get("content")
+                        if isinstance(content, list):
+                            fragments: list[str] = []
+                            for item in content:
+                                if isinstance(item, dict):
+                                    fragment = item.get("text") or item.get("content")
+                                    if isinstance(fragment, str) and fragment.strip():
+                                        fragments.append(fragment.strip())
+                                elif isinstance(item, str) and item.strip():
+                                    fragments.append(item.strip())
+                            if fragments:
+                                return "\n".join(fragments).strip()
+                        elif isinstance(content, str) and content.strip():
+                            return content.strip()
+        raise LLMError(f"Qwen 响应解析失败: {data}")
 
     def _call_gemini(self, prompt: str) -> str:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -220,3 +252,35 @@ def build_batch_analysis_prompt(payload: Dict[str, Any]) -> str:
         f"个股详情：{json.dumps(payload.get('results', {}), ensure_ascii=False)}",
     ]
     return "\n".join(prompt)
+
+
+def build_single_analysis_prompt(payload: Dict[str, Any], mode: str) -> str:
+    ticker = payload.get("ticker")
+    timeframe = payload.get("timeframe")
+    decision = payload.get("decision", {})
+    quote = payload.get("quote") or {}
+    macro = payload.get("macro") or {}
+
+    mode = (mode or "short_term").lower()
+    mode_title = "短线交易分析" if mode == "short_term" else "中长期投资评估"
+
+    prompt_lines = [
+        f"请作为专业证券分析师，对 {ticker} 进行{mode_title}。",
+        f"分析周期：{timeframe}",
+        f"模型决策数据：{json.dumps(decision, ensure_ascii=False)}",
+    ]
+
+    if mode == "short_term":
+        prompt_lines.append(
+            "请重点参考技术面指标、趋势强弱、资金和情绪线索，快速给出：1) 操作结论；2) 关键技术要点；3) 风险控制与止盈止损建议。"
+        )
+    else:
+        prompt_lines.extend(
+            [
+                "以下为基本面快照：" + json.dumps(quote, ensure_ascii=False),
+                "宏观/行业参考：" + json.dumps(macro, ensure_ascii=False),
+                "请综合技术走势、估值、成长性、行业地位与宏观环境，分条说明：结论、主要驱动与催化、潜在风险与监控要点。",
+            ]
+        )
+
+    return "\n".join(prompt_lines)

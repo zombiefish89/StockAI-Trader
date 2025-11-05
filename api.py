@@ -9,7 +9,7 @@ import time
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Sequence
 
 import env  # noqa: F401
 
@@ -42,6 +42,7 @@ class AnalysisRequest(BaseModel):
     start: Optional[datetime] = Field(None, description="可选，起始日期时间")
     end: Optional[datetime] = Field(None, description="可选，结束日期时间")
     force_refresh: bool = Field(False, description="是否忽略缓存强制刷新数据")
+    ai_modes: List[str] = Field(default_factory=list, description="需要的 AI 分析模式，支持 short_term、long_term")
 
 
 class AnalysisResponse(BaseModel):
@@ -62,6 +63,8 @@ class AnalysisResponse(BaseModel):
     latency_ms: int
     quote_snapshot: Dict[str, Any] | None = None
     data_source: Optional[str] = Field(None, description="行情数据来源")
+    ai_short_term_summary: Optional[str] = Field(None, description="短线 AI 分析总结")
+    ai_long_term_summary: Optional[str] = Field(None, description="中长期 AI 分析总结")
 
 
 class WatchlistRequest(BaseModel):
@@ -282,6 +285,45 @@ async def _maybe_generate_batch_llm_summary(
         return None
 
 
+async def _maybe_generate_single_llm_summary(
+    *,
+    mode: str,
+    ticker: str,
+    timeframe: str,
+    decision: Dict[str, Any],
+    quote_snapshot: Optional[Dict[str, Any]],
+    macro: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not os.getenv("LLM_PROVIDER") or LLMClient is None:
+        return None
+    try:
+        client = LLMClient.from_env()
+    except LLMNotConfigured:
+        return None
+
+    timeout_env = "LLM_SHORT_TIMEOUT" if mode == "short_term" else "LLM_LONG_TIMEOUT"
+    timeout_value = os.getenv(timeout_env)
+    if timeout_value:
+        try:
+            client.timeout = float(timeout_value)
+        except ValueError:
+            pass
+
+    payload = {
+        "mode": mode,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "decision": decision,
+        "quote": quote_snapshot,
+        "macro": macro,
+    }
+    try:
+        return await asyncio.to_thread(client.summarize_single_analysis, payload, mode)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("单标的 %s LLM(%s) 总结失败：%s", ticker, mode, exc)
+        return None
+
+
 async def _run_single_analysis(
     ticker: str,
     timeframe: str,
@@ -289,6 +331,7 @@ async def _run_single_analysis(
     end: Optional[datetime],
     force_refresh: bool = False,
     include_quote: bool = True,
+    ai_modes: Optional[Sequence[str]] = None,
 ) -> AnalysisResponse:
     start_time = time.perf_counter()
     candles = await get_latest_candles(
@@ -318,6 +361,48 @@ async def _run_single_analysis(
         except Exception:
             quote_snapshot = None
 
+    ai_short_summary: Optional[str] = None
+    ai_long_summary: Optional[str] = None
+    normalized_modes = []
+    if ai_modes:
+        for mode in ai_modes:
+            norm = (mode or "").strip().lower()
+            if norm in {"short_term", "long_term"} and norm not in normalized_modes:
+                normalized_modes.append(norm)
+
+    macro_report: Optional[Dict[str, Any]] = None
+    if "long_term" in normalized_modes:
+        try:
+            macro_snapshot = await get_macro_snapshot()
+            macro_summary = summarize_macro(macro_snapshot)
+            macro_report = summarize_for_report(macro_summary)
+        except Exception as exc:
+            logger.warning("获取宏观数据用于 LLM 失败：%s", exc)
+            macro_report = None
+
+    decision_payload = jsonable_encoder(decision)
+    quote_payload = jsonable_encoder(quote_snapshot) if quote_snapshot is not None else None
+
+    if "short_term" in normalized_modes:
+        ai_short_summary = await _maybe_generate_single_llm_summary(
+            mode="short_term",
+            ticker=ticker,
+            timeframe=timeframe,
+            decision=decision_payload,
+            quote_snapshot=quote_payload,
+            macro=None,
+        )
+
+    if "long_term" in normalized_modes:
+        ai_long_summary = await _maybe_generate_single_llm_summary(
+            mode="long_term",
+            ticker=ticker,
+            timeframe=timeframe,
+            decision=decision_payload,
+            quote_snapshot=quote_payload,
+            macro=macro_report,
+        )
+
     latency_ms = int((time.perf_counter() - start_time) * 1000)
 
     return AnalysisResponse(
@@ -338,6 +423,8 @@ async def _run_single_analysis(
         latency_ms=latency_ms,
         quote_snapshot=quote_snapshot,
         data_source=candles.attrs.get("source"),
+        ai_short_term_summary=ai_short_summary,
+        ai_long_term_summary=ai_long_summary,
     )
 
 
@@ -351,6 +438,7 @@ async def analyze(request: AnalysisRequest) -> AnalysisResponse:
         end=request.end,
         force_refresh=request.force_refresh,
         include_quote=True,
+        ai_modes=request.ai_modes,
     )
 
 

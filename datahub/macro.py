@@ -2,9 +2,9 @@
 宏观与板块数据抓取模块。
 
 功能点：
-- 指数快照：基于 yfinance 获取主要指数的行情变动。
-- 板块排行：优先使用 AkShare，如不可用则返回空列表。
-- 市场宽度：统计涨跌家数、涨停/跌停等，需 AkShare 支持。
+- 指数快照：优先使用 Tushare / yfinance 获取主要指数的行情变动。
+- 板块排行：基于 Tushare 的行业归类统计。
+- 市场宽度：统计涨跌家数、涨停/跌停等。
 
 所有接口均为异步，内部通过 asyncio.to_thread 调用同步库，
 默认带有 TTL 缓存以减少外部 API 请求频率。
@@ -21,21 +21,28 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from copy import deepcopy
+
 import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
 
-from .akshare_api import (
-    AkShareUnavailable,
-    fetch_cn_index_daily,
-    fetch_hsgt_board_rank,
-    fetch_lhb_summary,
-    fetch_market_spot,
-    fetch_northbound_intraday,
-    fetch_sector_flow_detail,
-    fetch_sector_fund_flow,
-    fetch_stock_news,
+from infra.cache_store import cache_manager
+
+from .akshare_api import AkShareUnavailable, fetch_northbound_intraday
+from .tushare_api import (
+    TushareUnavailable,
+    compute_industry_rankings,
+    fetch_daily,
+    fetch_moneyflow_hsgt,
+    fetch_news as fetch_tushare_news,
+    fetch_stock_basic,
+    fetch_top_inst,
+    fetch_top_list,
+    fetch_index_daily as ts_fetch_index_daily,
+    get_latest_trade_date,
+    select_leaders,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +89,14 @@ _BREADTH_CACHE: Optional[_CacheEntry] = None
 _NORTHBOUND_CACHE: Optional[_CacheEntry] = None
 _LHB_CACHE: Optional[_CacheEntry] = None
 _NEWS_CACHE: Optional[_CacheEntry] = None
+_DAILY_CACHE: Dict[str, _CacheEntry] = {}
+_STOCK_BASIC_CACHE: Optional[_CacheEntry] = None
+_MACRO_CACHE: Optional[_CacheEntry] = None
+
+def _macro_cache_key() -> str:
+    return "macro::snapshot"
+
+MACRO_SNAPSHOT_TTL = int(os.getenv("MACRO_SNAPSHOT_TTL", "300"))
 
 
 def _get_from_cache(cache: Dict[str, _CacheEntry], key: str, ttl: int) -> Optional[Any]:
@@ -93,6 +108,39 @@ def _get_from_cache(cache: Dict[str, _CacheEntry], key: str, ttl: int) -> Option
 
 def _set_cache(cache: Dict[str, _CacheEntry], key: str, payload: Any) -> None:
     cache[key] = _CacheEntry(payload=payload, timestamp=time.time())
+
+
+def _get_daily_snapshot(trade_date: str, ttl_seconds: int = 600) -> Optional[pd.DataFrame]:
+    entry = _DAILY_CACHE.get(trade_date)
+    if entry and time.time() - entry.timestamp < ttl_seconds:
+        return entry.payload.copy()
+    try:
+        df = fetch_daily(trade_date)
+    except TushareUnavailable as exc:
+        logger.warning("Tushare daily 数据不可用：%s", exc)
+        return None
+    if df is None or df.empty:
+        return None
+    payload = df.copy()
+    _DAILY_CACHE[trade_date] = _CacheEntry(payload=payload, timestamp=time.time())
+    return payload
+
+
+def _get_stock_basic(ttl_seconds: int = 6 * 3600) -> Optional[pd.DataFrame]:
+    global _STOCK_BASIC_CACHE
+    if _STOCK_BASIC_CACHE and time.time() - _STOCK_BASIC_CACHE.timestamp < ttl_seconds:
+        payload = _STOCK_BASIC_CACHE.payload
+        return payload.copy() if isinstance(payload, pd.DataFrame) else payload
+    try:
+        df = fetch_stock_basic(fields="ts_code,name,industry")
+    except TushareUnavailable as exc:
+        logger.warning("Tushare stock_basic 不可用：%s", exc)
+        return None
+    if df is None or df.empty:
+        return None
+    payload = df.copy()
+    _STOCK_BASIC_CACHE = _CacheEntry(payload=payload, timestamp=time.time())
+    return payload
 
 
 def _prepare_index_dataframe(df: Optional[pd.DataFrame]) -> pd.DataFrame:
@@ -147,32 +195,9 @@ async def get_index_snapshot(
 
     for idx, (name, code) in enumerate(mapping.items()):
         df: Optional[pd.DataFrame] = None
-        source_label = "yfinance"
-        try:
-            df = await asyncio.to_thread(
-                yf.download,
-                code,
-                period="5d",
-                progress=False,
-                auto_adjust=False,
-            )
-        except Exception as exc:  # pragma: no cover - 网络异常
-            logger.warning("获取指数 %s 数据失败: %s", code, exc)
-        if idx < len(mapping) - 1 and throttle_seconds > 0:
-            await asyncio.sleep(throttle_seconds)
+        source_label = ""
 
-        if df is None or df.empty:
-            df = await asyncio.to_thread(_fetch_index_from_akshare, name)
-            if df is not None and not df.empty:
-                source_label = "akshare"
-        if (df is None or df.empty) and name in FINNHUB_INDEX_SYMBOLS:
-            df = await asyncio.to_thread(
-                _fetch_index_from_finnhub,
-                FINNHUB_INDEX_SYMBOLS[name],
-            )
-            if df is not None and not df.empty:
-                source_label = "finnhub"
-        if (df is None or df.empty) and name in TUSHARE_INDEX_CODES:
+        if name in TUSHARE_INDEX_CODES:
             df = await asyncio.to_thread(
                 _fetch_index_from_tushare,
                 TUSHARE_INDEX_CODES[name],
@@ -180,11 +205,42 @@ async def get_index_snapshot(
             if df is not None and not df.empty:
                 source_label = "tushare"
 
+        if (df is None or df.empty) and code:
+            try:
+                df = await asyncio.to_thread(
+                    yf.download,
+                    code,
+                    period="5d",
+                    progress=False,
+                    auto_adjust=False,
+                )
+                if df is not None and not df.empty:
+                    source_label = "yfinance"
+            except Exception as exc:  # pragma: no cover - 网络异常
+                logger.warning("获取指数 %s 数据失败: %s", code, exc)
+
+        if (df is None or df.empty) and name in FINNHUB_INDEX_SYMBOLS:
+            df = await asyncio.to_thread(
+                _fetch_index_from_finnhub,
+                FINNHUB_INDEX_SYMBOLS[name],
+            )
+            if df is not None and not df.empty:
+                source_label = "finnhub"
+
+        if (df is None or df.empty) and name in ("sh000300", "sz399006"):
+            df = await asyncio.to_thread(_fetch_index_from_akshare, name)
+            if df is not None and not df.empty:
+                source_label = "akshare"
+
         if df is None or df.empty:
+            if idx < len(mapping) - 1 and throttle_seconds > 0:
+                await asyncio.sleep(throttle_seconds)
             continue
 
         df = _prepare_index_dataframe(df)
         if df.empty or "Close" not in df.columns:
+            if idx < len(mapping) - 1 and throttle_seconds > 0:
+                await asyncio.sleep(throttle_seconds)
             continue
 
         df = df.tail(2).copy()
@@ -220,6 +276,8 @@ async def get_index_snapshot(
             "volume_change_pct": round(volume_change_pct, 3),
             "source": source_label,
         }
+        if idx < len(mapping) - 1 and throttle_seconds > 0:
+            await asyncio.sleep(throttle_seconds)
 
     if snapshot:
         _set_cache(_INDEX_CACHE, cache_key, snapshot)
@@ -238,7 +296,7 @@ async def get_sector_rankings(
     limit: int = 5,
     ttl_seconds: int = 1800,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """获取板块涨跌排名，当前支持 A 股（依赖 AkShare）。"""
+    """获取板块涨跌排名，当前支持 A 股（依赖 Tushare）。"""
 
     cache_key = f"{market}:{limit}"
     cached = _get_from_cache(_SECTOR_CACHE, cache_key, ttl_seconds)
@@ -248,88 +306,79 @@ async def get_sector_rankings(
     rankings: Dict[str, List[Dict[str, Any]]] = {"top": [], "bottom": []}
 
     if market == "cn":
-        try:
-            df = await asyncio.to_thread(fetch_sector_fund_flow, "今日")
-        except AkShareUnavailable:
-            logger.info("未安装 AkShare，无法获取 A 股板块排行。")
-        except Exception as exc:  # pragma: no cover - 网络异常
-            logger.warning("获取板块排行失败: %s", exc)
-        else:
-            if df is not None and not df.empty and "change_pct" in df.columns:
-                data = df.copy()
-                data["change_pct"] = pd.to_numeric(data["change_pct"], errors="coerce")
-                data = data.dropna(subset=["change_pct"])
-                if not data.empty:
-                    top_records = (
-                        data.sort_values(by="change_pct", ascending=False)
-                        .head(limit)
-                        .to_dict("records")
-                    )
-                    bottom_records = (
-                        data.sort_values(by="change_pct", ascending=True)
-                        .head(limit)
-                        .to_dict("records")
-                    )
-                    rankings["top"] = await _build_sector_entries(top_records, top=True)
-                    rankings["bottom"] = await _build_sector_entries(bottom_records, top=False)
-
-        if not rankings["top"]:
-            try:
-                board_df = await asyncio.to_thread(
-                    fetch_hsgt_board_rank,
-                    "北向资金增持行业板块排行",
-                    "今日",
-                )
-            except AkShareUnavailable:
-                pass
-            except Exception as exc:  # pragma: no cover
-                logger.debug("北向板块排行获取失败: %s", exc)
-            else:
-                if board_df is not None and not board_df.empty:
-                    data = board_df.copy()
-                    name_col = _find_column(data.columns, ["名称"])
-                    pct_col = _find_column(data.columns, ["最新涨跌幅"])
-                    net_col = _find_column(data.columns, ["北向资金今日增持估计-市值"])
-                    if name_col and (pct_col or net_col):
-                        if pct_col:
-                            data[pct_col] = pd.to_numeric(data[pct_col], errors="coerce")
-                        if net_col:
-                            data[net_col] = pd.to_numeric(data[net_col], errors="coerce")
-                        data = data.dropna(subset=[name_col])
-                        data_top = data.head(limit)
-                        data_bottom = data.tail(limit)
-
-                        def _convert_board(records: pd.DataFrame, reverse: bool) -> List[Dict[str, Any]]:
-                            items: List[Dict[str, Any]] = []
-                            sorted_df = records
-                            if pct_col:
-                                sorted_df = sorted_df.sort_values(by=pct_col, ascending=reverse)
-                            for _, row in sorted_df.iterrows():
-                                name = row.get(name_col)
-                                if not name:
-                                    continue
-                                change_value = row.get(pct_col)
-                                net_value = row.get(net_col)
-                                net_converted = (
-                                    float(net_value) if isinstance(net_value, (int, float)) else _as_float(net_value)
-                                )
-                                if net_converted is not None:
-                                    net_converted = net_converted  # 单位为元，无需转换
-                                items.append(
-                                    {
-                                        "name": name,
-                                        "change_pct": float(change_value) if isinstance(change_value, (int, float)) else (_as_float(change_value) or 0.0),
-                                        "fund_flow": net_converted,
-                                        "leaders": [],
-                                    }
-                                )
-                            return items
-
-                        rankings["top"] = _convert_board(data_top, reverse=False)
-                        rankings["bottom"] = _convert_board(data_bottom, reverse=True)
+        trade_date = await asyncio.to_thread(get_latest_trade_date)
+        if not trade_date:
+            trade_date = datetime.now().strftime("%Y%m%d")
+        daily_df = await asyncio.to_thread(_get_daily_snapshot, trade_date)
+        stock_basic = await asyncio.to_thread(_get_stock_basic)
+        if daily_df is not None and stock_basic is not None:
+            top_df, bottom_df = compute_industry_rankings(daily_df, stock_basic, top_n=limit)
+            rankings["top"] = _convert_industry_rows(top_df, daily_df, stock_basic, top=True)
+            rankings["bottom"] = _convert_industry_rows(bottom_df, daily_df, stock_basic, top=False)
 
     _set_cache(_SECTOR_CACHE, cache_key, rankings)
     return rankings
+
+
+def _convert_industry_rows(
+    rows: Optional[pd.DataFrame],
+    daily_df: Optional[pd.DataFrame],
+    stock_basic: Optional[pd.DataFrame],
+    *,
+    top: bool,
+    leader_limit: int = 3,
+) -> List[Dict[str, Any]]:
+    if rows is None or rows.empty:
+        return []
+    if daily_df is None or daily_df.empty or stock_basic is None or stock_basic.empty:
+        payload = []
+        for _, row in rows.iterrows():
+            name = row.get("industry")
+            change = _safe_round(row.get("change_pct"))
+            amount = _safe_round(row.get("amount"), digits=6)
+            payload.append(
+                {
+                    "name": name,
+                    "change_pct": change or 0.0,
+                    "fund_flow": (amount * 1e3) if amount is not None else None,
+                    "leaders": [],
+                }
+            )
+        return payload
+
+    items: List[Dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        industry = row.get("industry")
+        if not industry:
+            continue
+        change = _safe_round(row.get("change_pct")) or 0.0
+        amount = _safe_round(row.get("amount"), digits=6)
+        leaders_df = select_leaders(
+            industry,
+            daily_df,
+            stock_basic,
+            ascending=not top,
+            limit=leader_limit,
+        )
+        leaders: List[Dict[str, Any]] = []
+        if leaders_df is not None and not leaders_df.empty:
+            for _, leader in leaders_df.iterrows():
+                leaders.append(
+                    {
+                        "code": leader.get("ts_code"),
+                        "name": leader.get("name"),
+                        "change_pct": _safe_round(leader.get("pct_chg")),
+                    }
+                )
+        items.append(
+            {
+                "name": industry,
+                "change_pct": change,
+                "fund_flow": (amount * 1e3) if amount is not None else None,
+                "leaders": leaders,
+            }
+        )
+    return items
 
 
 async def get_market_breadth(
@@ -348,25 +397,25 @@ async def get_market_breadth(
         "limit_down": None,
     }
 
-    try:
-        df = await asyncio.to_thread(fetch_market_spot)
-    except AkShareUnavailable:
-        logger.info("未安装 AkShare，市场宽度指标缺失。")
-    except Exception as exc:  # pragma: no cover
-        logger.warning("获取市场宽度失败: %s", exc)
-        if _BREADTH_CACHE:
-            logger.info("宽度获取失败，使用缓存数据。")
-            return _BREADTH_CACHE.payload
+    trade_date = await asyncio.to_thread(get_latest_trade_date)
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+
+    daily_df = await asyncio.to_thread(_get_daily_snapshot, trade_date)
+    if (daily_df is None or daily_df.empty) and trade_date:
+        # 尝试回退上一交易日
+        prev_trade_date = await asyncio.to_thread(get_latest_trade_date, 1)
+        if prev_trade_date:
+            daily_df = await asyncio.to_thread(_get_daily_snapshot, prev_trade_date)
+
+    if daily_df is not None and not daily_df.empty:
+        pct_series = pd.to_numeric(daily_df.get("pct_chg"), errors="coerce")
+        breadth["advance"] = int((pct_series > 0).sum())
+        breadth["decline"] = int((pct_series < 0).sum())
+        breadth["limit_up"] = int((pct_series >= 9.7).sum())
+        breadth["limit_down"] = int((pct_series <= -9.7).sum())
     else:
-        if df is not None and not df.empty:
-            data = df.copy()
-            change_col = _find_column(data.columns, ["涨跌幅", "涨幅", "change"])
-            if change_col:
-                change_series = pd.to_numeric(data[change_col], errors="coerce")
-                breadth["advance"] = int((change_series > 0).sum())
-                breadth["decline"] = int((change_series < 0).sum())
-                breadth["limit_up"] = int((change_series >= 9.8).sum())
-                breadth["limit_down"] = int((change_series <= -9.8).sum())
+        logger.info("未从 Tushare 获取到有效的日行情数据，市场宽度为空。")
 
     _BREADTH_CACHE = _CacheEntry(payload=breadth, timestamp=time.time())
     return breadth
@@ -374,6 +423,17 @@ async def get_market_breadth(
 
 async def get_macro_snapshot() -> Dict[str, Any]:
     """聚合宏观指数、板块与市场宽度为一体的概览。"""
+
+    global _MACRO_CACHE
+    if _MACRO_CACHE and time.time() - _MACRO_CACHE.timestamp < MACRO_SNAPSHOT_TTL:
+        cached = _MACRO_CACHE.payload
+        if isinstance(cached, dict):
+            return deepcopy(cached)
+        return cached
+    redis_cached = cache_manager.load_json(_macro_cache_key())
+    if redis_cached is not None:
+        _MACRO_CACHE = _CacheEntry(payload=deepcopy(redis_cached), timestamp=time.time())
+        return redis_cached
 
     indices, sectors, breadth, northbound, lhb, news = await asyncio.gather(
         get_index_snapshot(),
@@ -392,7 +452,7 @@ async def get_macro_snapshot() -> Dict[str, Any]:
     if isinstance(adv, int) and isinstance(decl, int) and decl > 0:
         sentiment["advance_decline_ratio"] = round(adv / decl, 3)
 
-    return {
+    result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "indices": indices,
         "sectors": sectors,
@@ -401,6 +461,10 @@ async def get_macro_snapshot() -> Dict[str, Any]:
         "lhb": lhb,
         "news": news,
     }
+    payload = deepcopy(result)
+    _MACRO_CACHE = _CacheEntry(payload=payload, timestamp=time.time())
+    cache_manager.store_json(_macro_cache_key(), payload, MACRO_SNAPSHOT_TTL)
+    return result
 
 
 def _fetch_index_from_akshare(name: str) -> Optional[pd.DataFrame]:
@@ -419,82 +483,6 @@ def _fetch_index_from_akshare(name: str) -> Optional[pd.DataFrame]:
     except Exception as exc:  # pragma: no cover
         logger.warning("AkShare 指数 %s 拉取失败: %s", symbol, exc)
     return None
-
-
-async def _build_sector_entries(
-    records: List[Dict[str, Any]],
-    *,
-    top: bool,
-    leader_limit: int = 3,
-) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    for record in records:
-        entry = await _build_sector_entry(record, top=top, leader_limit=leader_limit)
-        if entry:
-            items.append(entry)
-    return items
-
-
-async def _build_sector_entry(
-    record: Dict[str, Any],
-    *,
-    top: bool,
-    leader_limit: int,
-) -> Optional[Dict[str, Any]]:
-    name = record.get("name") or record.get("code")
-    if not name:
-        return None
-
-    change = _safe_round(record.get("change_pct"))
-    fund_flow = _safe_round(record.get("main_net"), digits=2)
-    leaders = await _load_sector_leaders(str(name), top=top, limit=leader_limit)
-
-    item: Dict[str, Any] = {
-        "name": str(name),
-        "change_pct": change if change is not None else 0.0,
-        "fund_flow": fund_flow,
-        "leaders": leaders,
-    }
-    code = record.get("code")
-    if code:
-        item["code"] = code
-    return item
-
-
-async def _load_sector_leaders(name: str, top: bool, limit: int) -> List[Dict[str, Any]]:
-    try:
-        df = await asyncio.to_thread(fetch_sector_flow_detail, name)
-    except AkShareUnavailable:
-        return []
-    except Exception as exc:  # pragma: no cover - 第三方接口异常
-        logger.debug("获取板块龙头失败 %s: %s", name, exc)
-        return []
-
-    if df is None or df.empty:
-        return []
-
-    data = df.copy()
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = ["_".join(str(part) for part in col if part) for col in data.columns]
-
-    if "change_pct" in data.columns:
-        data["change_pct"] = pd.to_numeric(data["change_pct"], errors="coerce")
-        data = data.dropna(subset=["change_pct"])
-        data = data.sort_values(by="change_pct", ascending=not top)
-
-    records = data.head(limit).to_dict("records")
-    leaders: List[Dict[str, Any]] = []
-    for record in records:
-        leaders.append(
-            {
-                "code": record.get("code"),
-                "name": record.get("name"),
-                "change_pct": _safe_round(record.get("change_pct")),
-                "main_net": _safe_round(record.get("main_net"), digits=2),
-                "main_ratio": _safe_round(record.get("main_ratio")),
-            }
-        )
-    return leaders
 
 
 def _find_column(columns: Iterable[Any], keywords: Sequence[str]) -> Optional[Any]:
@@ -535,14 +523,31 @@ async def _get_northbound_flow(ttl_seconds: int = 1800) -> Optional[float]:
     if _NORTHBOUND_CACHE and time.time() - _NORTHBOUND_CACHE.timestamp < ttl_seconds:
         return _NORTHBOUND_CACHE.payload
 
+    trade_date = await asyncio.to_thread(get_latest_trade_date)
+    if trade_date:
+        try:
+            df = await asyncio.to_thread(fetch_moneyflow_hsgt, trade_date)
+        except TushareUnavailable as exc:
+            logger.info("Tushare 北向资金不可用：%s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("获取北向资金数据失败: %s", exc)
+        else:
+            if df is not None and not df.empty:
+                df = df.copy()
+                if "north_money" in df.columns:
+                    north_series = pd.to_numeric(df["north_money"], errors="coerce").dropna()
+                    if not north_series.empty:
+                        # north_money 单位：亿元
+                        value = float(north_series.iloc[-1]) * 1e8
+                        _NORTHBOUND_CACHE = _CacheEntry(payload=value, timestamp=time.time())
+                        return value
+
     try:
         df = await asyncio.to_thread(fetch_northbound_intraday, "北向资金")
     except AkShareUnavailable:
         logger.info("未安装 AkShare，北向资金缺失。")
-        _NORTHBOUND_CACHE = _CacheEntry(payload=None, timestamp=time.time())
-        return None
     except Exception as exc:  # pragma: no cover
-        logger.warning("获取北向资金数据失败: %s", exc)
+        logger.warning("获取北向资金分时失败: %s", exc)
     else:
         if df is not None and not df.empty:
             data = df.copy()
@@ -552,7 +557,6 @@ async def _get_northbound_flow(ttl_seconds: int = 1800) -> Optional[float]:
             if north_col is not None:
                 series = pd.to_numeric(data[north_col], errors="coerce").dropna()
                 if not series.empty:
-                    # 转换为人民币，原始数值单位为万元
                     value = float(series.iloc[-1]) * 1e4
                     _NORTHBOUND_CACHE = _CacheEntry(payload=value, timestamp=time.time())
                     return value
@@ -566,55 +570,60 @@ async def _get_lhb_summary(ttl_seconds: int = 3600, limit: int = 5) -> List[Dict
     if _LHB_CACHE and time.time() - _LHB_CACHE.timestamp < ttl_seconds:
         return _LHB_CACHE.payload
 
-    data: List[Dict[str, Any]] = []
-    for offset in range(5):  # 尝试最近五个交易日
-        date = (datetime.now() - timedelta(days=offset)).strftime("%Y%m%d")
-        try:
-            df = await asyncio.to_thread(fetch_lhb_summary, date)
-        except AkShareUnavailable:
-            _LHB_CACHE = _CacheEntry(payload=[], timestamp=time.time())
-            return []
-        except Exception:
-            continue
-        if df is not None and not df.empty:
-            df = df.copy()
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = ["_".join(str(part) for part in col if part) for col in df.columns]
-            code_col = _find_column(df.columns, ["代码"])
-            name_col = _find_column(df.columns, ["简称", "名称"])
-            net_col = _find_column(df.columns, ["净买额", "净买入"])
-            buy_col = _find_column(df.columns, ["买入金额"])
-            sell_col = _find_column(df.columns, ["卖出金额"])
-            times_col = _find_column(df.columns, ["上榜次数"])
-            change_col = _find_column(df.columns, ["涨跌幅"])
+    trade_date = await asyncio.to_thread(get_latest_trade_date)
+    candidates: List[Dict[str, Any]] = []
 
-            sort_col = net_col or times_col
-            if sort_col:
-                df[sort_col] = pd.to_numeric(df[sort_col], errors="coerce")
-                df = df.dropna(subset=[sort_col])
-                df = df.sort_values(by=sort_col, ascending=False)
+    if trade_date:
+        for offset in range(5):
+            date_obj = datetime.strptime(trade_date, "%Y%m%d") - timedelta(days=offset)
+            date = date_obj.strftime("%Y%m%d")
+            try:
+                df = await asyncio.to_thread(fetch_top_inst, date)
+                if (df is None or df.empty) and offset == 0:
+                    df = await asyncio.to_thread(fetch_top_list, date)
+            except TushareUnavailable as exc:
+                logger.info("Tushare 龙虎榜不可用：%s", exc)
+                break
+            except Exception:
+                continue
 
-            rows = df.head(limit).to_dict("records")
-            for row in rows:
-                data.append(
+            if df is None or df.empty:
+                continue
+
+            data = df.copy()
+            net_col = _find_column(data.columns, ["net_buy", "净买"])
+            buy_col = _find_column(data.columns, ["buy", "买入"])
+            sell_col = _find_column(data.columns, ["sell", "卖出"])
+            ts_col = _find_column(data.columns, ["ts_code", "代码"])
+            name_col = _find_column(data.columns, ["name", "名称"])
+
+            if net_col:
+                data[net_col] = pd.to_numeric(data[net_col], errors="coerce")
+                data = data.dropna(subset=[net_col])
+                data = data.sort_values(by=net_col, ascending=False)
+
+            for _, row in data.head(limit).iterrows():
+                net_value = _as_float(row.get(net_col))
+                buy_value = _as_float(row.get(buy_col))
+                sell_value = _as_float(row.get(sell_col))
+                candidates.append(
                     {
-                        "code": row.get(code_col),
+                        "code": row.get(ts_col),
                         "name": row.get(name_col),
-                        "net_buy": _as_float(row.get(net_col)),
-                        "buy_value": _as_float(row.get(buy_col)),
-                        "sell_value": _as_float(row.get(sell_col)),
-                        "times": int(_as_float(row.get(times_col)) or 0) if times_col else None,
-                        "change_pct": _safe_round(row.get(change_col)),
+                        "net_buy": (net_value * 1e4) if net_value is not None else None,
+                        "buy_value": (buy_value * 1e4) if buy_value is not None else None,
+                        "sell_value": (sell_value * 1e4) if sell_value is not None else None,
                         "date": date,
                     }
                 )
-            break
+            if candidates:
+                break
 
-    if not data and _LHB_CACHE:
-        data = _LHB_CACHE.payload
+    if not candidates and _LHB_CACHE:
+        candidates = _LHB_CACHE.payload
 
-    _LHB_CACHE = _CacheEntry(payload=data, timestamp=time.time())
-    return data
+    _LHB_CACHE = _CacheEntry(payload=candidates, timestamp=time.time())
+    return candidates
 
 
 async def _get_news_highlights(ttl_seconds: int = 1800, limit: int = 5) -> List[Dict[str, Any]]:
@@ -623,29 +632,37 @@ async def _get_news_highlights(ttl_seconds: int = 1800, limit: int = 5) -> List[
         return _NEWS_CACHE.payload
 
     news_list: List[Dict[str, Any]] = []
+    trade_date = await asyncio.to_thread(get_latest_trade_date)
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+
     try:
-        df = await asyncio.to_thread(fetch_stock_news, 1)
-    except AkShareUnavailable:
-        _NEWS_CACHE = _CacheEntry(payload=[], timestamp=time.time())
-        return []
+        df = await asyncio.to_thread(fetch_tushare_news, trade_date, trade_date)
+        if (df is None or df.empty) and trade_date:
+            # 补充当天滚动新闻
+            df = await asyncio.to_thread(fetch_tushare_news, trade_date, datetime.now().strftime("%Y%m%d"))
+    except TushareUnavailable as exc:
+        logger.info("Tushare 新闻接口不可用：%s", exc)
+        df = None
     except Exception as exc:  # pragma: no cover
         logger.warning("获取新闻失败: %s", exc)
-    else:
-        if df is not None and not df.empty:
-            data = df.head(limit).copy()
-            for _, row in data.iterrows():
-                title = row.get("title") or row.get("新闻标题") or row.get("标题")
-                if not title:
-                    continue
-                news_list.append(
-                    {
-                        "title": title,
-                        "summary": row.get("summary") or row.get("digest") or row.get("内容摘要") or row.get("摘要"),
-                        "time": row.get("datetime") or row.get("time") or row.get("publish_time") or row.get("发布时间"),
-                        "source": row.get("source") or row.get("媒体") or row.get("来源"),
-                        "url": row.get("url") or row.get("链接"),
-                    }
-                )
+        df = None
+
+    if df is not None and not df.empty:
+        data = df.head(limit).copy()
+        for _, row in data.iterrows():
+            title = row.get("title")
+            if not title:
+                continue
+            news_list.append(
+                {
+                    "title": title,
+                    "summary": row.get("summary") or row.get("abstract") or row.get("content"),
+                    "time": row.get("datetime") or row.get("time") or row.get("pub_time"),
+                    "source": row.get("source") or row.get("media"),
+                    "url": row.get("url"),
+                }
+            )
 
     if not news_list and _NEWS_CACHE:
         news_list = _NEWS_CACHE.payload
@@ -707,43 +724,23 @@ def _fetch_index_from_finnhub(symbol: str) -> Optional[pd.DataFrame]:
 
 
 def _fetch_index_from_tushare(ts_code: str) -> Optional[pd.DataFrame]:
-    token = os.getenv("TUSHARE_TOKEN")
-    if not token:
-        return None
-    try:
-        import tushare as ts  # type: ignore
-    except ImportError:
-        logger.info("未安装 tushare，无法使用备援。")
-        return None
-
-    ts.set_token(token)
-    pro = ts.pro_api()
     try:
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - pd.Timedelta(days=20)).strftime("%Y%m%d")
-        df = pro.index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        df = ts_fetch_index_daily(ts_code, start_date, end_date)
+    except TushareUnavailable:
+        return None
     except Exception as exc:  # pragma: no cover
         logger.warning("Tushare 指数 %s 拉取失败: %s", ts_code, exc)
         return None
-
     if df is None or df.empty:
         return None
-
-    df = df.copy()
-    df.rename(
-        columns={
-            "trade_date": "Datetime",
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "vol": "Volume",
-        },
-        inplace=True,
-    )
-    df["Datetime"] = pd.to_datetime(df["Datetime"], format="%Y%m%d", utc=True)
-    df.set_index("Datetime", inplace=True)
-    df.sort_index(inplace=True)
-    numeric_cols = ["Open", "High", "Low", "Close", "Volume"]
-    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
-    return df
+    data = df.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+    try:
+        data.index = data.index.tz_localize("Asia/Shanghai", nonexistent="shift_forward", ambiguous="NaT").tz_convert("UTC")
+    except TypeError:
+        data.index = data.index.tz_convert("UTC")
+    data = data.loc[:, ~data.columns.duplicated()]
+    return data.tail(20)

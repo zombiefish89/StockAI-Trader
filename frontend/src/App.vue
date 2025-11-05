@@ -29,6 +29,17 @@
       <button type="submit" :disabled="loading">
         {{ loading ? "分析中..." : "生成分析" }}
       </button>
+
+      <div class="ai-options">
+        <label>
+          <input type="checkbox" v-model="enableShortTerm" />
+          启用短线 AI 总结
+        </label>
+        <label>
+          <input type="checkbox" v-model="enableLongTerm" />
+          启用中长期 AI 分析
+        </label>
+      </div>
     </form>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -71,6 +82,8 @@ const form = reactive<AnalysisForm>({
 const loading = ref(false);
 const error = ref("");
 const result = ref<AnalysisResultPayload | null>(null);
+const enableShortTerm = ref(true);
+const enableLongTerm = ref(false);
 
 async function analyze() {
   error.value = "";
@@ -81,6 +94,7 @@ async function analyze() {
       {
         ticker: form.ticker,
         timeframe: form.timeframe,
+        ai_modes: buildAiModes(),
       }
     );
     result.value = data;
@@ -92,6 +106,13 @@ async function analyze() {
   } finally {
     loading.value = false;
   }
+}
+
+function buildAiModes(): string[] {
+  const modes: string[] = [];
+  if (enableShortTerm.value) modes.push("short_term");
+  if (enableLongTerm.value) modes.push("long_term");
+  return modes;
 }
 </script>
 
@@ -120,6 +141,18 @@ header h1 {
   padding: 1.25rem;
   border-radius: 12px;
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+}
+
+.ai-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  color: #0f172a;
+  font-weight: 500;
+}
+
+.ai-options input {
+  margin-right: 0.5rem;
 }
 
 label {

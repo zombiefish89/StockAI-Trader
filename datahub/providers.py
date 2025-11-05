@@ -23,6 +23,11 @@ from .akshare_api import (
     fetch_us_stock_daily,
     is_available as akshare_is_available,
 )
+from .tushare_api import (
+    TushareUnavailable,
+    fetch_pro_bar,
+    to_ts_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,80 @@ class YFinanceProvider(CandleProvider):
         if df is None:
             return pd.DataFrame()
         return df
+
+
+class TushareProvider(CandleProvider):
+    """Tushare Pro 行情源，覆盖 A 股日线与分钟级数据。"""
+
+    name = "tushare"
+    _FREQ_MAP = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "60m": "60min",
+        "1h": "60min",
+        "1d": "D",
+    }
+    _SUPPORTED = set(_FREQ_MAP.keys())
+
+    def __init__(self) -> None:
+        try:
+            from .tushare_api import get_ts  # noqa: F401
+
+            get_ts()
+        except TushareUnavailable as exc:
+            raise ProviderError(str(exc)) from exc
+
+    def supports(self, interval: str) -> bool:
+        return interval in self._SUPPORTED
+
+    def fetch_candles(
+        self,
+        ticker: str,
+        start: Optional[datetime],
+        end: Optional[datetime],
+        interval: str,
+    ) -> pd.DataFrame:
+        ts_code = to_ts_code(ticker)
+        freq = self._FREQ_MAP[interval]
+        df = fetch_pro_bar(
+            ts_code=ts_code,
+            freq=freq,
+            start=start,
+            end=end,
+            asset="E",
+        )
+        if df.empty:
+            raise ProviderError("Tushare 返回的数据为空。")
+
+        if start:
+            df = df[df.index >= start]
+        if end:
+            df = df[df.index <= end]
+
+        if df.empty:
+            raise ProviderError("Tushare 数据为空。")
+
+        try:
+            df.index = df.index.tz_localize("Asia/Shanghai", nonexistent="shift_forward", ambiguous="NaT").tz_convert("UTC")
+        except TypeError:
+            df.index = df.index.tz_convert("UTC")
+
+        columns = ["Open", "High", "Low", "Close", "Volume"]
+        existing = [col for col in columns if col in df.columns]
+        return df[existing]
+
+
+def load_tushare_provider() -> Optional[TushareProvider]:
+    """构造 Tushare 行情提供方。"""
+    if os.getenv("TUSHARE_DISABLE") == "1":
+        return None
+    try:
+        return TushareProvider()
+    except ProviderError as exc:
+        logger.warning("Tushare 初始化失败：%s", exc)
+        return None
 
 
 class AkShareProvider(CandleProvider):
@@ -217,6 +296,9 @@ def load_akshare_us_provider() -> Optional[AkShareUSProvider]:
 def default_providers() -> Iterable[CandleProvider]:
     """返回默认启用的提供方列表，按优先级排序。"""
     providers: list[CandleProvider] = []
+    tushare = load_tushare_provider()
+    if tushare is not None:
+        providers.append(tushare)
     akshare = load_akshare_provider()
     if akshare is not None:
         providers.append(akshare)

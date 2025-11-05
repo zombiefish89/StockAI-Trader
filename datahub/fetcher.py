@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Dict, Optional, Sequence
@@ -24,6 +25,8 @@ from .providers import (
     YFinanceProvider,
     default_providers,
 )
+from infra.cache_store import cache_manager
+from infra.rate_limit import rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -137,22 +140,42 @@ async def get_latest_candles(
         cached_df: Optional[pd.DataFrame] = None
 
         if use_cache:
-            cached_df = cache.load(ticker, interval, provider=provider.name)
-            if cached_df is not None:
-                cached_df = _normalize_dataframe(cached_df)
-                if not force_refresh and not _needs_refresh(cached_df, interval, end_ts):
-                    clipped = _clip_dataframe(cached_df, start_ts, end_ts)
+            if not force_refresh:
+                hot_df = cache_manager.load_dataframe(provider.name, ticker, interval)
+                if hot_df is not None:
+                    hot_df = _normalize_dataframe(hot_df)
+                    if not _needs_refresh(hot_df, interval, end_ts):
+                        clipped = _clip_dataframe(hot_df, start_ts, end_ts)
+                        clipped.attrs["source"] = provider.name
+                        return clipped
+                    cached_df = hot_df
+
+            disk_df = cache.load(ticker, interval, provider=provider.name)
+            if disk_df is not None:
+                disk_df = _normalize_dataframe(disk_df)
+                cached_df = disk_df
+                ttl_seconds = cache_manager.ttl_for_interval(interval)
+                cache_manager.store_dataframe(
+                    provider.name,
+                    ticker,
+                    interval,
+                    disk_df,
+                    ttl=ttl_seconds,
+                )
+                if not force_refresh and not _needs_refresh(disk_df, interval, end_ts):
+                    clipped = _clip_dataframe(disk_df, start_ts, end_ts)
                     clipped.attrs["source"] = provider.name
                     return clipped
 
         try:
-            fresh_df = await asyncio.to_thread(
-                provider.fetch_candles,
-                ticker,
-                start_ts,
-                end_ts,
-                interval,
-            )
+            async with rate_limiter.limit(provider.name, symbol=ticker):
+                fresh_df = await asyncio.to_thread(
+                    provider.fetch_candles,
+                    ticker,
+                    start_ts,
+                    end_ts,
+                    interval,
+                )
             fresh_df = _normalize_dataframe(fresh_df)
         except ProviderError as exc:
             logger.warning("数据源 %s 返回错误：%s", provider.name, exc)
@@ -191,6 +214,13 @@ async def get_latest_candles(
             continue
 
         cache.store(ticker, interval, df, provider=provider.name)
+        cache_manager.store_dataframe(
+            provider.name,
+            ticker,
+            interval,
+            df,
+            ttl=cache_manager.ttl_for_interval(interval),
+        )
         clipped = _clip_dataframe(df, start_ts, end_ts)
         clipped.attrs["source"] = provider.name
         return clipped
@@ -336,6 +366,15 @@ def _is_us_equity(ticker: str) -> bool:
     return False
 
 
+def _env_provider_list(*env_names: str) -> list[str]:
+    providers: list[str] = []
+    for name in env_names:
+        value = os.getenv(name)
+        if value:
+            providers.append(value.strip().lower())
+    return [p for p in providers if p]
+
+
 @lru_cache(maxsize=1)
 def _provider_registry() -> Dict[str, CandleProvider]:
     """缓存默认提供方实例，避免重复初始化。"""
@@ -367,16 +406,29 @@ def _resolve_providers(
                 continue
             _maybe_add(provider)
     else:
+        ticker_upper = ticker.upper()
         if _is_china_equity(ticker):
-            preferred = ["akshare", "yfinance", "akshare_us"]
+            preferred = _env_provider_list("A_STOCK_PRIMARY", "A_STOCK_SECONDARY")
+            fallback = ["tushare", "akshare", "yfinance", "akshare_us"]
+        elif ticker_upper.endswith(".HK"):
+            preferred = _env_provider_list("HK_STOCK_PRIMARY", "HK_STOCK_SECONDARY")
+            fallback = ["yfinance", "akshare", "akshare_us", "tushare"]
         elif _is_us_equity(ticker):
-            preferred = ["yfinance", "akshare_us", "akshare"]
+            preferred = _env_provider_list("US_STOCK_PRIMARY", "US_STOCK_SECONDARY")
+            fallback = ["yfinance", "akshare_us", "akshare", "tushare"]
         else:
-            preferred = ["yfinance", "akshare", "akshare_us"]
+            preferred = []
+            fallback = ["yfinance", "akshare", "akshare_us", "tushare"]
+
+        if not preferred:
+            preferred = fallback
+
         for name in preferred:
             provider = registry.get(name)
             if provider:
                 _maybe_add(provider)
+            else:
+                logger.debug("环境变量指定的数据源未注册：%s", name)
         for provider in registry.values():
             _maybe_add(provider)
 

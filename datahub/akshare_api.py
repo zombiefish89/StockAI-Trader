@@ -34,6 +34,15 @@ def _load_akshare():
         import akshare as ak  # type: ignore
     except ImportError as exc:  # pragma: no cover - 依赖缺失
         raise AkShareUnavailable("AkShare 未安装，请先 pip install akshare。") from exc
+    # 显式禁用 AkShare 使用的全局代理，避免受系统代理干扰。
+    try:  # pragma: no cover - 属性兼容处理
+        setattr(ak, "proxies", None)
+    except Exception:
+        pass
+    try:
+        setattr(ak, "request_proxies", None)
+    except Exception:
+        pass
     return ak
 
 
@@ -95,12 +104,23 @@ def _maybe_disable_proxy() -> bool:
     global _PROXY_DISABLED
     if _PROXY_DISABLED:
         return False
-    keys = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]
+    keys = [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "socks_proxy",
+        "SOCKS_PROXY",
+    ]
     removed = False
     for key in keys:
         if key in os.environ:
             os.environ.pop(key, None)
             removed = True
+    # 确保 requests 明确不会走代理
+    os.environ.setdefault("NO_PROXY", "*")
     if removed:
         _PROXY_DISABLED = True
         return True
