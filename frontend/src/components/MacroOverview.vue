@@ -1,163 +1,299 @@
 <template>
-  <section class="card">
-    <header class="card__header">
-      <h2>宏观板块概览</h2>
-      <button type="button" @click="refresh" :disabled="loading">
-        {{ loading ? "刷新中..." : "刷新" }}
-      </button>
-    </header>
-    <p class="muted">更新时间：{{ generatedAt ? formatDate(generatedAt) : "暂无" }}</p>
-    <p v-if="error" class="status">{{ error }}</p>
+  <el-card class="rounded-2xl border border-slate-200/70 shadow-sm" shadow="never">
+    <template #header>
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div class="space-y-1">
+          <h2 class="text-xl font-semibold text-slate-900">宏观板块概览</h2>
+          <el-text type="info">
+            更新时间：{{ generatedAt ? formatDate(generatedAt) : "暂无" }}
+          </el-text>
+        </div>
+        <el-button type="primary" :loading="loading" class="self-start md:self-auto" @click="refresh">
+          {{ loading ? "刷新中..." : "刷新" }}
+        </el-button>
+      </div>
+    </template>
 
-    <div v-if="overview" class="overview">
-      <h3>市场摘要</h3>
-      <p>{{ overview }}</p>
-    </div>
+    <el-alert
+      v-if="error"
+      :title="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="rounded-xl"
+    />
 
-    <div class="grid">
-      <section v-if="highlights.length">
-        <h3>重点亮点</h3>
-        <ul>
-          <li v-for="item in highlights" :key="item">
-            {{ item }}
-          </li>
-        </ul>
-      </section>
-      <section v-if="risks.length">
-        <h3>潜在风险</h3>
-        <ul>
-          <li v-for="item in risks" :key="item">
-            {{ item }}
-          </li>
-        </ul>
-      </section>
-    </div>
+    <el-row :gutter="20" class="mt-2">
+      <el-col :md="12" :xs="24">
+        <el-card
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">市场摘要</strong></template>
+          <el-skeleton :loading="loading && !overview" animated :rows="3">
+            <template #template>
+              <el-skeleton-item variant="text" />
+              <el-skeleton-item variant="text" />
+              <el-skeleton-item variant="text" />
+            </template>
+            <p v-if="overview" class="leading-relaxed text-slate-700">{{ overview }}</p>
+            <el-empty v-else description="暂无数据" />
+          </el-skeleton>
+        </el-card>
+      </el-col>
+      <el-col :md="12" :xs="24">
+        <el-card
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">市场温度计</strong></template>
+          <el-descriptions :column="1" border class="rounded-xl">
+            <el-descriptions-item label="涨跌家数" v-if="hasBreadth" class="text-slate-700">
+              <span>涨 {{ breadthData.advance ?? "-" }} · 跌 {{ breadthData.decline ?? "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="涨停 / 跌停" v-if="hasBreadth" class="text-slate-700">
+              <span>{{ breadthData.limit_up ?? "-" }} / {{ breadthData.limit_down ?? "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="北向资金" v-if="sentimentData.northbound_net !== undefined">
+              <el-tag
+                :type="(sentimentData.northbound_net ?? 0) >= 0 ? 'success' : 'danger'"
+                class="rounded-full"
+              >
+                {{ ((sentimentData.northbound_net ?? 0) / 1e8).toFixed(2) }} 亿
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="涨跌比" v-if="sentimentData.advance_decline_ratio !== undefined">
+              {{ sentimentData.advance_decline_ratio?.toFixed(2) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="情绪指标" v-if="!hasBreadth && !hasSentiment">
+              暂无情绪数据
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+      </el-col>
+    </el-row>
 
-    <section v-if="indicesRows.length">
-      <h3>主要指数</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>指数</th>
-            <th>收盘</th>
-            <th>涨跌幅</th>
-            <th>成交量(亿)</th>
-            <th>量能变化</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in indicesRows" :key="item.name">
-            <td>{{ item.name }}</td>
-            <td>{{ item.close?.toFixed(2) ?? "-" }}</td>
-            <td :class="item.change_pct >= 0 ? 'up' : 'down'">
-              {{ formatPercent(item.change_pct / 100) }}
-            </td>
-            <td>{{ item.volume ? (item.volume / 1e8).toFixed(1) : "-" }}</td>
-            <td>{{ item.volume_change_pct ? formatPercent(item.volume_change_pct / 100) : "-" }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+    <el-row :gutter="20" class="mt-4">
+      <el-col :md="12" :xs="24">
+        <el-card
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">重点亮点</strong></template>
+          <el-empty v-if="!highlights.length" description="暂无亮点" />
+          <el-timeline v-else>
+            <el-timeline-item
+              v-for="item in highlights"
+              :key="item"
+              type="success"
+            >
+              {{ item }}
+            </el-timeline-item>
+          </el-timeline>
+        </el-card>
+      </el-col>
+      <el-col :md="12" :xs="24">
+        <el-card
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">潜在风险</strong></template>
+          <el-empty v-if="!risks.length" description="暂无风险提示" />
+          <el-timeline v-else>
+            <el-timeline-item
+              v-for="item in risks"
+              :key="item"
+              type="warning"
+            >
+              {{ item }}
+            </el-timeline-item>
+          </el-timeline>
+        </el-card>
+      </el-col>
+    </el-row>
 
-    <div class="grid">
-      <section v-if="topSectors.length">
-        <h3>领涨板块</h3>
-        <ul>
-          <li v-for="item in topSectors" :key="item.name">
-            {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
-            <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
-            <span v-if="item.leaders?.length">
-              · 龙头：
-              {{
-                item.leaders
-                  .slice(0, 2)
-                  .map((lead) =>
-                    `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
-                  )
-                  .join("、")
-              }}
-            </span>
-          </li>
-        </ul>
-      </section>
-      <section v-if="weakSectors.length">
-        <h3>领跌板块</h3>
-        <ul>
-          <li v-for="item in weakSectors" :key="item.name">
-            {{ item.name }} · {{ formatPercent(item.change_pct / 100) }}
-            <span v-if="item.fund_flow"> · 主力 {{ (item.fund_flow / 1e8).toFixed(2) }} 亿</span>
-            <span v-if="item.leaders?.length">
-              · 龙头：
-              {{
-                item.leaders
-                  .slice(0, 2)
-                  .map((lead) =>
-                    `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
-                  )
-                  .join("、")
-              }}
-            </span>
-          </li>
-        </ul>
-      </section>
-    </div>
+    <el-card
+      v-if="indicesRows.length"
+      shadow="never"
+      class="mt-4 rounded-xl border border-slate-200/70 shadow-none"
+    >
+      <template #header><strong class="text-sm text-slate-500">主要指数表现</strong></template>
+      <el-table :data="indicesRows" size="small" border class="rounded-xl">
+        <el-table-column prop="name" label="指数" min-width="140" />
+        <el-table-column
+          prop="close"
+          label="收盘"
+          :formatter="(_, __, value) => (value ? value.toFixed(2) : '-')"
+          min-width="120"
+        />
+        <el-table-column prop="change_pct" label="涨跌幅" min-width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.change_pct >= 0 ? 'success' : 'danger'">
+              {{ formatPercent(row.change_pct / 100) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="volume" label="成交量(亿)" min-width="120">
+          <template #default="{ row }">
+            {{ row.volume ? (row.volume / 1e8).toFixed(1) : "-" }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="volume_change_pct" label="量能变化" min-width="140">
+          <template #default="{ row }">
+            {{
+              row.volume_change_pct
+                ? formatPercent(row.volume_change_pct / 100)
+                : "-"
+            }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
 
-    <section v-if="breadth">
-      <h3>市场宽度</h3>
-      <p>
-        涨：{{ breadth.advance ?? "-" }} · 跌：{{ breadth.decline ?? "-" }}
-        · 涨停：{{ breadth.limit_up ?? "-" }} · 跌停：{{ breadth.limit_down ?? "-" }}
-      </p>
-    </section>
-    <section v-if="Object.keys(sentiment).length">
-      <h3>情绪指标</h3>
-      <p v-if="sentiment.northbound_net !== undefined">
-        北向资金：
-        <span :class="(sentiment.northbound_net ?? 0) >= 0 ? 'up' : 'down'">
-          {{ ((sentiment.northbound_net ?? 0) / 1e8).toFixed(2) }} 亿
-        </span>
-      </p>
-      <p v-if="sentiment.advance_decline_ratio !== undefined">
-        涨跌比：{{ sentiment.advance_decline_ratio?.toFixed(2) }}
-      </p>
-    </section>
-    <section v-if="lhbList.length">
-      <h3>龙虎榜焦点</h3>
-      <ul>
-        <li v-for="item in lhbList" :key="item.code ?? item.name">
-          <strong>{{ item.name ?? item.code }}</strong>
-          <span v-if="item.net_buy !== undefined && item.net_buy !== null">
-            · 净{{ (item.net_buy ?? 0) >= 0 ? "买" : "卖" }}
-            <span :class="classifyMoney(item.net_buy)">{{ formatBillion(item.net_buy) }}</span>
-          </span>
-          <span v-if="item.change_pct !== undefined && item.change_pct !== null">
-            · 当日涨跌 {{ formatPercent((item.change_pct ?? 0) / 100) }}
-          </span>
-          <span v-if="item.times">
-            · 上榜 {{ item.times }} 次
-          </span>
-        </li>
-      </ul>
-    </section>
-    <section v-if="newsList.length">
-      <h3>市场新闻</h3>
-      <ul class="news">
-        <li v-for="item in newsList" :key="item.title">
-          <div class="news__header">
-            <a v-if="item.url" :href="item.url" target="_blank" rel="noopener">
-              {{ item.title }}
-            </a>
-            <span v-else>{{ item.title }}</span>
-          </div>
-          <p class="news__meta">
-            <span v-if="item.source">{{ item.source }}</span>
-            <span v-if="item.time"> · {{ formatNewsTime(item.time) }}</span>
-          </p>
-          <p v-if="item.summary" class="news__summary">{{ item.summary }}</p>
-        </li>
-      </ul>
-    </section>
-  </section>
+    <el-row :gutter="20" class="mt-4">
+      <el-col :md="12" :xs="24">
+        <el-card
+          v-if="topSectors.length"
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">领涨板块</strong></template>
+          <el-table :data="topSectors" size="small" border class="rounded-xl">
+            <el-table-column prop="name" label="板块" min-width="140" />
+            <el-table-column label="涨跌幅" min-width="120">
+              <template #default="{ row }">
+                <el-tag type="success">{{ formatPercent(row.change_pct / 100) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="主力净流入" min-width="140">
+              <template #default="{ row }">
+                {{ row.fund_flow ? (row.fund_flow / 1e8).toFixed(2) + " 亿" : "-" }}
+              </template>
+            </el-table-column>
+            <el-table-column label="龙头" min-width="200">
+              <template #default="{ row }">
+                {{
+                  row.leaders && row.leaders.length
+                    ? row.leaders
+                        .slice(0, 2)
+                        .map((lead) =>
+                          `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                        )
+                        .join("、")
+                    : "-"
+                }}
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+      <el-col :md="12" :xs="24">
+        <el-card
+          v-if="weakSectors.length"
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">领跌板块</strong></template>
+          <el-table :data="weakSectors" size="small" border class="rounded-xl">
+            <el-table-column prop="name" label="板块" min-width="140" />
+            <el-table-column label="涨跌幅" min-width="120">
+              <template #default="{ row }">
+                <el-tag type="danger">{{ formatPercent(row.change_pct / 100) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="主力净流入" min-width="140">
+              <template #default="{ row }">
+                {{ row.fund_flow ? (row.fund_flow / 1e8).toFixed(2) + " 亿" : "-" }}
+              </template>
+            </el-table-column>
+            <el-table-column label="龙头" min-width="200">
+              <template #default="{ row }">
+                {{
+                  row.leaders && row.leaders.length
+                    ? row.leaders
+                        .slice(0, 2)
+                        .map((lead) =>
+                          `${lead.name ?? lead.code}(${formatPercent((lead.change_pct ?? 0) / 100)})`
+                        )
+                        .join("、")
+                    : "-"
+                }}
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="20" class="mt-4">
+      <el-col :md="12" :xs="24">
+        <el-card
+          v-if="lhbList.length"
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">龙虎榜焦点</strong></template>
+          <el-timeline>
+            <el-timeline-item
+              v-for="item in lhbList"
+              :key="item.code ?? item.name"
+              type="primary"
+            >
+              <div class="lhb-item">
+                <strong>{{ item.name ?? item.code }}</strong>
+                <span>
+                  净{{ (item.net_buy ?? 0) >= 0 ? "买" : "卖" }}
+                  <el-tag :type="(item.net_buy ?? 0) >= 0 ? 'success' : 'danger'" size="small" class="rounded-full">
+                    {{ formatBillion(item.net_buy) }}
+                  </el-tag>
+                </span>
+                <span v-if="item.change_pct !== undefined && item.change_pct !== null">
+                  · 当日 {{ formatPercent((item.change_pct ?? 0) / 100) }}
+                </span>
+                <span v-if="item.times"> · 上榜 {{ item.times }} 次</span>
+              </div>
+            </el-timeline-item>
+          </el-timeline>
+        </el-card>
+      </el-col>
+      <el-col :md="12" :xs="24">
+        <el-card
+          v-if="newsList.length"
+          shadow="never"
+          class="rounded-xl border border-slate-200/70 shadow-none"
+        >
+          <template #header><strong class="text-sm text-slate-500">市场新闻</strong></template>
+          <el-scrollbar max-height="300" class="space-y-4">
+            <div
+              v-for="item in newsList"
+              :key="item.title"
+              class="border-b border-slate-100 pb-4 last:border-b-0"
+            >
+              <h4 class="text-base font-semibold text-slate-900">
+                <a
+                  v-if="item.url"
+                  :href="item.url"
+                  target="_blank"
+                  rel="noopener"
+                  class="text-indigo-600 transition hover:text-indigo-700"
+                >
+                  {{ item.title }}
+                </a>
+                <span v-else>{{ item.title }}</span>
+              </h4>
+              <p class="mt-1 text-sm text-slate-500">
+                <span v-if="item.source">{{ item.source }}</span>
+                <span v-if="item.time"> · {{ formatNewsTime(item.time) }}</span>
+              </p>
+              <p v-if="item.summary" class="mt-2 text-sm leading-relaxed text-slate-700">
+                {{ item.summary }}
+              </p>
+            </div>
+          </el-scrollbar>
+        </el-card>
+      </el-col>
+    </el-row>
+  </el-card>
 </template>
 
 <script setup lang="ts">
@@ -234,6 +370,15 @@ const indicesRows = computed(() =>
   }))
 );
 
+const breadthData = computed(() => breadth.value ?? {});
+const sentimentData = computed(() => sentiment.value ?? {});
+const hasBreadth = computed(
+  () => Object.keys(breadthData.value).length > 0
+);
+const hasSentiment = computed(
+  () => Object.keys(sentimentData.value).length > 0
+);
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
@@ -256,13 +401,6 @@ function formatBillion(value?: number | null) {
     return "-";
   }
   return `${(Math.abs(value) / 1e8).toFixed(2)} 亿`;
-}
-
-function classifyMoney(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    return "";
-  }
-  return value >= 0 ? "up" : "down";
 }
 
 function formatNewsTime(value?: string | null) {
@@ -311,91 +449,3 @@ onMounted(() => {
   refresh();
 });
 </script>
-
-<style scoped>
-.card {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
-  padding: 1.5rem;
-  margin-top: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.card__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.grid {
-  display: grid;
-  gap: 1.5rem;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-}
-
-.overview {
-  background: #f1f5f9;
-  border-radius: 10px;
-  padding: 1rem;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  padding: 0.6rem;
-  border-bottom: 1px solid #e2e8f0;
-  text-align: left;
-}
-
-.muted {
-  color: #64748b;
-}
-
-.status {
-  color: #dc2626;
-}
-
-.up {
-  color: #16a34a;
-}
-
-.down {
-  color: #dc2626;
-}
-
-.news {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.news__header a {
-  color: #1d4ed8;
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.news__header a:hover {
-  text-decoration: underline;
-}
-
-.news__meta {
-  color: #64748b;
-  font-size: 0.85rem;
-}
-
-.news__summary {
-  color: #475569;
-  margin-top: 0.25rem;
-}
-</style>

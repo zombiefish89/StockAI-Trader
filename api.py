@@ -24,6 +24,7 @@ from datahub.macro import get_macro_snapshot
 from datahub.scanner import scan_opportunities
 from datahub.watchlist import Watchlist, load_watchlist, save_watchlist
 from engine.analyzer import analyze_snapshot
+from engine.features import summarize_indicators
 from engine.macro_analyzer import summarize_for_report, summarize_macro
 from engine.report import render as render_report
 
@@ -42,7 +43,7 @@ class AnalysisRequest(BaseModel):
     start: Optional[datetime] = Field(None, description="可选，起始日期时间")
     end: Optional[datetime] = Field(None, description="可选，结束日期时间")
     force_refresh: bool = Field(False, description="是否忽略缓存强制刷新数据")
-    ai_modes: List[str] = Field(default_factory=list, description="需要的 AI 分析模式，支持 short_term、long_term")
+    ai_modes: List[str] = Field(default_factory=list, description="需要的 AI 分析模式，支持 fast、deep（兼容旧值 short_term/long_term）")
 
 
 class AnalysisResponse(BaseModel):
@@ -63,8 +64,10 @@ class AnalysisResponse(BaseModel):
     latency_ms: int
     quote_snapshot: Dict[str, Any] | None = None
     data_source: Optional[str] = Field(None, description="行情数据来源")
-    ai_short_term_summary: Optional[str] = Field(None, description="短线 AI 分析总结")
-    ai_long_term_summary: Optional[str] = Field(None, description="中长期 AI 分析总结")
+    ai_fast_summary: Optional[str] = Field(None, description="AI 快速分析总结")
+    ai_deep_summary: Optional[str] = Field(None, description="AI 深度分析总结")
+    ai_short_term_summary: Optional[str] = Field(None, description="兼容字段，等同于 ai_fast_summary", deprecated=True)
+    ai_long_term_summary: Optional[str] = Field(None, description="兼容字段，等同于 ai_deep_summary", deprecated=True)
 
 
 class WatchlistRequest(BaseModel):
@@ -290,7 +293,7 @@ async def _maybe_generate_single_llm_summary(
     mode: str,
     ticker: str,
     timeframe: str,
-    decision: Dict[str, Any],
+    indicators: Dict[str, Any],
     quote_snapshot: Optional[Dict[str, Any]],
     macro: Optional[Dict[str, Any]],
 ) -> Optional[str]:
@@ -313,7 +316,7 @@ async def _maybe_generate_single_llm_summary(
         "mode": mode,
         "ticker": ticker,
         "timeframe": timeframe,
-        "decision": decision,
+        "indicators": indicators,
         "quote": quote_snapshot,
         "macro": macro,
     }
@@ -361,17 +364,26 @@ async def _run_single_analysis(
         except Exception:
             quote_snapshot = None
 
-    ai_short_summary: Optional[str] = None
-    ai_long_summary: Optional[str] = None
+    ai_fast_summary: Optional[str] = None
+    ai_deep_summary: Optional[str] = None
     normalized_modes = []
     if ai_modes:
         for mode in ai_modes:
             norm = (mode or "").strip().lower()
-            if norm in {"short_term", "long_term"} and norm not in normalized_modes:
-                normalized_modes.append(norm)
+            alias_map = {
+                "short_term": "fast",
+                "fast": "fast",
+                "fast_analysis": "fast",
+                "long_term": "deep",
+                "deep": "deep",
+                "deep_analysis": "deep",
+            }
+            resolved = alias_map.get(norm)
+            if resolved and resolved not in normalized_modes:
+                normalized_modes.append(resolved)
 
     macro_report: Optional[Dict[str, Any]] = None
-    if "long_term" in normalized_modes:
+    if "deep" in normalized_modes:
         try:
             macro_snapshot = await get_macro_snapshot()
             macro_summary = summarize_macro(macro_snapshot)
@@ -380,25 +392,25 @@ async def _run_single_analysis(
             logger.warning("获取宏观数据用于 LLM 失败：%s", exc)
             macro_report = None
 
-    decision_payload = jsonable_encoder(decision)
+    indicators_payload = summarize_indicators(features)
     quote_payload = jsonable_encoder(quote_snapshot) if quote_snapshot is not None else None
 
-    if "short_term" in normalized_modes:
-        ai_short_summary = await _maybe_generate_single_llm_summary(
-            mode="short_term",
+    if "fast" in normalized_modes:
+        ai_fast_summary = await _maybe_generate_single_llm_summary(
+            mode="fast",
             ticker=ticker,
             timeframe=timeframe,
-            decision=decision_payload,
+            indicators=indicators_payload,
             quote_snapshot=quote_payload,
             macro=None,
         )
 
-    if "long_term" in normalized_modes:
-        ai_long_summary = await _maybe_generate_single_llm_summary(
-            mode="long_term",
+    if "deep" in normalized_modes:
+        ai_deep_summary = await _maybe_generate_single_llm_summary(
+            mode="deep",
             ticker=ticker,
             timeframe=timeframe,
-            decision=decision_payload,
+            indicators=indicators_payload,
             quote_snapshot=quote_payload,
             macro=macro_report,
         )
@@ -423,8 +435,10 @@ async def _run_single_analysis(
         latency_ms=latency_ms,
         quote_snapshot=quote_snapshot,
         data_source=candles.attrs.get("source"),
-        ai_short_term_summary=ai_short_summary,
-        ai_long_term_summary=ai_long_summary,
+        ai_fast_summary=ai_fast_summary,
+        ai_deep_summary=ai_deep_summary,
+        ai_short_term_summary=ai_fast_summary,
+        ai_long_term_summary=ai_deep_summary,
     )
 
 

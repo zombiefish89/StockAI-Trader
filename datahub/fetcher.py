@@ -27,6 +27,12 @@ from .providers import (
 )
 from infra.cache_store import cache_manager
 from infra.rate_limit import rate_limiter
+from .tushare_api import (
+    TushareUnavailable,
+    get_pro,
+    get_latest_trade_date,
+    to_ts_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +284,11 @@ async def get_quote_summary(ticker: str) -> Dict[str, Any]:
 
 
 def _download_quote_summary(ticker: str) -> Dict[str, Any]:
+    if _is_china_equity(ticker):
+        cn_payload = _download_quote_summary_cn(ticker)
+        if cn_payload:
+            return cn_payload
+
     ticker_obj = yf.Ticker(ticker)
     info = _sanitize_payload(ticker_obj.info or {})
     fast_info = getattr(ticker_obj, "fast_info", None)
@@ -288,6 +299,109 @@ def _download_quote_summary(ticker: str) -> Dict[str, Any]:
     return {
         "info": info,
         "fast": price,
+    }
+
+
+def _download_quote_summary_cn(ticker: str) -> Dict[str, Any]:
+    try:
+        pro = get_pro()
+    except TushareUnavailable as exc:
+        logger.debug("Tushare 不可用，使用 yfinance 作为 Quote 数据源：%s", exc)
+        return {}
+
+    ts_code = to_ts_code(ticker)
+    info: Dict[str, Any] = {}
+    fast: Dict[str, Any] = {}
+
+    try:
+        basic_df = pro.stock_basic(ts_code=ts_code, fields="ts_code,name,industry,list_date,market,exchange")
+        if basic_df is not None and not basic_df.empty:
+            row = basic_df.iloc[0]
+            info.update(
+                {
+                    "ts_code": row.get("ts_code"),
+                    "name": row.get("name"),
+                    "industry": row.get("industry"),
+                    "list_date": row.get("list_date"),
+                    "market": row.get("market"),
+                    "exchange": row.get("exchange"),
+                }
+            )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Tushare stock_basic 查询失败：%s", exc)
+
+    trade_date = get_latest_trade_date()
+
+    def _to_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        fields = "ts_code,trade_date,close,turnover_rate,turnover_rate_f,pe_ttm,pb,ps_ttm,total_mv,circ_mv"
+        daily_basic = None
+        if trade_date:
+            daily_basic = pro.daily_basic(ts_code=ts_code, trade_date=trade_date, fields=fields)
+        if daily_basic is None or daily_basic.empty:
+            daily_basic = pro.daily_basic(ts_code=ts_code, limit=1, fields=fields)
+        if daily_basic is not None and not daily_basic.empty:
+            row = daily_basic.iloc[0]
+            info.update(
+                {
+                    "pe_ttm": _to_float(row.get("pe_ttm")),
+                    "pb": _to_float(row.get("pb")),
+                    "ps_ttm": _to_float(row.get("ps_ttm")),
+                    "total_mv": _to_float(row.get("total_mv")),
+                    "circ_mv": _to_float(row.get("circ_mv")),
+                }
+            )
+            fast.update(
+                {
+                    "close": _to_float(row.get("close")),
+                    "turnover_rate": _to_float(row.get("turnover_rate")),
+                    "turnover_rate_free": _to_float(row.get("turnover_rate_f")),
+                    "trade_date": row.get("trade_date"),
+                }
+            )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Tushare daily_basic 查询失败：%s", exc)
+
+    try:
+        fields = "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
+        daily_df = None
+        if trade_date:
+            daily_df = pro.daily(ts_code=ts_code, start_date=trade_date, end_date=trade_date, fields=fields)
+        if daily_df is None or daily_df.empty:
+            daily_df = pro.daily(ts_code=ts_code, limit=1, fields=fields)
+        if daily_df is not None and not daily_df.empty:
+            row = daily_df.iloc[0]
+            fast.update(
+                {
+                    "open": _to_float(row.get("open")),
+                    "high": _to_float(row.get("high")),
+                    "low": _to_float(row.get("low")),
+                    "close": _to_float(row.get("close")),
+                    "pre_close": _to_float(row.get("pre_close")),
+                    "change": _to_float(row.get("change")),
+                    "pct_chg": _to_float(row.get("pct_chg")),
+                    "volume": _to_float(row.get("vol")),
+                    "amount": _to_float(row.get("amount")),
+                    "trade_date": fast.get("trade_date") or row.get("trade_date"),
+                }
+            )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Tushare daily 查询失败：%s", exc)
+
+    if not info and not fast:
+        return {}
+    return {
+        "info": _sanitize_payload(info),
+        "fast": _sanitize_payload(fast),
     }
 
 

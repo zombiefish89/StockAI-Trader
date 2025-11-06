@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, List, Union
 
 try:
     import requests
@@ -14,6 +14,22 @@ except ImportError:  # pragma: no cover - requests 未安装
     requests = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一名严格、审慎的证券分析师与投研助理。你只依据提供的结构化数据做出分析，"
+    "所有结论必须注明对应的证据字段，不得臆造或引用外部数据。如数据缺失或冲突，需明确标注并说明影响。"
+    "输出始终包含两部分：\n1) 中文可读报告（Markdown）；\n2) 机器可解析 JSON，与报告信息一致。"
+)
+
+MODE_PROMPT_FAST = (
+    "【分析模式：FAST】目标：快速给出可执行的结论草案；字数 ≤400 字；步骤 ≤6；"
+    "优先引用最新行情、近7~30日价量与情绪信号；选择最关键的3~5个指标；标记缺失数据。"
+)
+
+MODE_PROMPT_DEEP = (
+    "【分析模式：DEEP】目标：系统化研究报告；字数 1200~2000 字；步骤 ≤16；"
+    "覆盖估值、成长、质量、技术、资金、情绪、宏观行业；必须给出牛/中/熊场景及监控清单。"
+)
 
 
 class LLMError(RuntimeError):
@@ -66,12 +82,12 @@ class LLMClient:
         return self._chat(prompt)
 
     def summarize_single_analysis(self, payload: Dict[str, Any], mode: str) -> str:
-        prompt = build_single_analysis_prompt(payload, mode)
-        return self._chat(prompt)
+        messages = build_single_analysis_prompt(payload, mode)
+        return self._chat(messages)
 
     # --- Internal helpers ---
 
-    def _chat(self, prompt: str) -> str:
+    def _chat(self, prompt: Union[str, Sequence[Dict[str, str]]]) -> str:
         if requests is None:
             raise LLMError("requests 模块缺失，无法调用 LLM")
 
@@ -84,24 +100,21 @@ class LLMClient:
             return self._call_gemini(prompt)
         raise LLMError(f"暂不支持的 LLM 提供商: {provider}")
 
-    def _call_openai(self, prompt: str) -> str:
+    def _call_openai(self, prompt: Union[str, Sequence[Dict[str, str]]]) -> str:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise LLMError("OPENAI_API_KEY 未配置")
         base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         model = self.model or os.getenv("OPENAI_MODEL", "gpt-5")
 
+        messages: List[Dict[str, str]]
+        messages = _normalize_messages(prompt)
+
         payload = {
             "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是一个专业的证券分析师，用简洁中文总结关键机会和风险。",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "600")),
-            "temperature": float(os.getenv("LLM_TEMPERATURE", "0.7")),
+            "messages": messages,
+            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1000")),
+            "temperature": float(os.getenv("LLM_TEMPERATURE", "0.6")),
         }
 
         resp = requests.post(
@@ -121,7 +134,7 @@ class LLMClient:
         except (KeyError, IndexError) as exc:
             raise LLMError(f"OpenAI 响应解析失败: {data}") from exc
 
-    def _call_qwen(self, prompt: str) -> str:
+    def _call_qwen(self, prompt: Union[str, Sequence[Dict[str, str]]]) -> str:
         api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
             raise LLMError("QWEN_API_KEY/DASHSCOPE_API_KEY 未配置")
@@ -131,16 +144,11 @@ class LLMClient:
             "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
         )
 
+        messages = _normalize_messages(prompt)
         payload = {
             "model": model,
             "input": {
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是专业的证券分析师，用简洁中文总结宏观与机会。",
-                    },
-                    {"role": "user", "content": prompt},
-                ]
+                "messages": messages,
             },
         }
         resp = requests.post(
@@ -177,7 +185,8 @@ class LLMClient:
                             fragments: list[str] = []
                             for item in content:
                                 if isinstance(item, dict):
-                                    fragment = item.get("text") or item.get("content")
+                                    fragment = item.get(
+                                        "text") or item.get("content")
                                     if isinstance(fragment, str) and fragment.strip():
                                         fragments.append(fragment.strip())
                                 elif isinstance(item, str) and item.strip():
@@ -188,7 +197,7 @@ class LLMClient:
                             return content.strip()
         raise LLMError(f"Qwen 响应解析失败: {data}")
 
-    def _call_gemini(self, prompt: str) -> str:
+    def _call_gemini(self, prompt: Union[str, Sequence[Dict[str, str]]]) -> str:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise LLMError("GEMINI_API_KEY 未配置")
@@ -197,14 +206,24 @@ class LLMClient:
             "GEMINI_BASE_URL",
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         )
+        messages = _normalize_messages(prompt)
+        contents = []
+        for message in messages:
+            role = message.get("role", "user")
+            text = message.get("content", "")
+            mapped_role = "user"
+            if role == "assistant":
+                mapped_role = "model"
+            elif role == "system":
+                mapped_role = "user"
+                text = "[SYSTEM]\n" + text
+            elif role == "developer":
+                mapped_role = "user"
+                text = "[DEVELOPER]\n" + text
+            contents.append({"role": mapped_role, "parts": [{"text": text}]})
 
         payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}],
-                }
-            ]
+            "contents": contents
         }
         resp = requests.post(
             base_url,
@@ -255,32 +274,85 @@ def build_batch_analysis_prompt(payload: Dict[str, Any]) -> str:
 
 
 def build_single_analysis_prompt(payload: Dict[str, Any], mode: str) -> str:
+    mode_norm = (mode or "fast").strip().lower()
+    mode_upper = "FAST" if mode_norm == "fast" else "DEEP"
+
     ticker = payload.get("ticker")
     timeframe = payload.get("timeframe")
-    decision = payload.get("decision", {})
+    indicators = payload.get("indicators", {})
     quote = payload.get("quote") or {}
     macro = payload.get("macro") or {}
 
-    mode = (mode or "short_term").lower()
-    mode_title = "短线交易分析" if mode == "short_term" else "中长期投资评估"
+    data_quality = {
+        "missing": [],
+        "latency": [],
+    }
 
-    prompt_lines = [
-        f"请作为专业证券分析师，对 {ticker} 进行{mode_title}。",
-        f"分析周期：{timeframe}",
-        f"模型决策数据：{json.dumps(decision, ensure_ascii=False)}",
+    if not indicators:
+        data_quality["missing"].append("indicators")
+    if not quote:
+        data_quality["missing"].append("quote_snapshot")
+    if not macro:
+        data_quality["missing"].append("macro")
+
+    context = {
+        "meta": {
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "mode": mode_upper,
+        },
+        "indicators": indicators,
+        "quote": quote,
+        "macro": macro,
+        "data_quality": data_quality,
+    }
+
+    context_json = json.dumps(context, ensure_ascii=False, default=str)
+
+    user_prompt = (
+        f"请对 {ticker} 进行{('快速' if mode_upper=='FAST' else '深度')}分析。"
+        f"\n数据上下文(JSON)：\n{context_json}\n\n"
+        "请严格遵循以下输出格式：\n"
+        "1) 中文报告：使用 Markdown，包含 结论 / 信号总览 / 投资逻辑 / 情景与计划 / 风险 / 数据质量，"
+        "并在每条关键判断后标注“（证据：字段名）”。\n"
+        "2) JSON：字段应包括 summary、signals、thesis、scenarios、risks、data_quality，与报告内容一致，"
+        "每项的 evidence 列出所引用的字段。"
+    )
+
+    mode_prompt = MODE_PROMPT_FAST if mode_upper == "FAST" else MODE_PROMPT_DEEP
+
+    messages = [
+        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+        {"role": "developer", "content": mode_prompt},
+        {"role": "user", "content": user_prompt},
     ]
+    return messages
 
-    if mode == "short_term":
-        prompt_lines.append(
-            "请重点参考技术面指标、趋势强弱、资金和情绪线索，快速给出：1) 操作结论；2) 关键技术要点；3) 风险控制与止盈止损建议。"
-        )
-    else:
-        prompt_lines.extend(
-            [
-                "以下为基本面快照：" + json.dumps(quote, ensure_ascii=False),
-                "宏观/行业参考：" + json.dumps(macro, ensure_ascii=False),
-                "请综合技术走势、估值、成长性、行业地位与宏观环境，分条说明：结论、主要驱动与催化、潜在风险与监控要点。",
-            ]
-        )
 
-    return "\n".join(prompt_lines)
+def _normalize_messages(prompt: Union[str, Sequence[Dict[str, str]]]) -> List[Dict[str, str]]:
+    if isinstance(prompt, str):
+        return [
+            {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+
+    normalized: List[Dict[str, str]] = []
+    allowed_roles = {"system", "user", "assistant"}
+    for message in prompt:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "user") or "user").lower()
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        if role not in allowed_roles:
+            prefix = f"[{role.upper()}]\n"
+            role = "user"
+            content = prefix + content
+        normalized.append({"role": role, "content": content})
+    if not normalized:
+        normalized = [
+            {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+            {"role": "user", "content": ""},
+        ]
+    return normalized

@@ -9,12 +9,20 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
     "axios": "^1.6.8",
-    "vue": "^3.4.21"
+    "element-plus": "^2.7.5",
+    "dompurify": "^3.1.0",
+    "markdown-it": "^13.0.1",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.2"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
     "@vitejs/plugin-vue": "^5.0.4",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
     "typescript": "^5.4.5",
     "vite": "^5.2.0",
     "vue-tsc": "^2.0.6"
