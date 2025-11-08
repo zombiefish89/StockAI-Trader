@@ -15,12 +15,6 @@
           @select="handleMenuSelect"
         >
           <el-menu-item
-            index="/analysis"
-            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
-          >
-            行情分析
-          </el-menu-item>
-          <el-menu-item
             index="/macro"
             class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
           >
@@ -37,6 +31,12 @@
             class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
           >
             机会扫描
+          </el-menu-item>
+          <el-menu-item
+            index="/stock"
+            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
+          >
+            个股分析
           </el-menu-item>
           <el-menu-item
             index="/reports"
@@ -75,7 +75,7 @@ const router = useRouter();
 
 const activeMenu = computed(() => {
   if (route.path === "/") {
-    return "/analysis";
+    return "/stock";
   }
   return route.path;
 });

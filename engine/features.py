@@ -11,89 +11,67 @@ from typing import Any, Dict
 
 
 def summarize_indicators(features: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    从 compute_all 的结果中提取适合 LLM 消费的信号。
+    """提取适合 LLM 消费的关键指标。"""
 
-    返回结构示例：
-    {
-        "price": {...},
-        "trend": {...},
-        "momentum": {...},
-        "volatility": {...},
-        "volume": {...},
-        "pattern_flags": [...],
-    }
-    """
+    def _compact(data: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in data.items() if value is not None}
 
-    def _section(name: str, keys: Dict[str, str]) -> Dict[str, Any]:
-        section: Dict[str, Any] = {}
-        source = features.get(name, {})
-        if isinstance(source, dict):
-            for out_key, src_key in keys.items():
-                value = source.get(src_key)
-                if value is not None:
-                    section[out_key] = value
-        return section
-
-    price = _section(
-        "price",
+    price = _compact(
         {
-            "close": "close",
-            "high": "high",
-            "low": "low",
-            "open": "open",
-            "change_pct_1d": "change_pct_1d",
-            "change_pct_5d": "change_pct_5d",
-        },
+            "close": features.get("price"),
+            "open": features.get("open"),
+            "high": features.get("high"),
+            "low": features.get("low"),
+            "volume": features.get("volume"),
+            "recent_high": features.get("recent_high"),
+            "recent_low": features.get("recent_low"),
+        }
     )
 
-    trend = _section(
-        "trend",
+    trend = _compact(
         {
-            "sma_5": "sma_5",
-            "sma_20": "sma_20",
-            "sma_50": "sma_50",
-            "ema_12": "ema_12",
-            "ema_26": "ema_26",
-            "macd": "macd",
-            "macd_signal": "macd_signal",
-            "adx": "adx",
-            "trend_score": "trend_score",
-        },
+            "ema20": features.get("ema20"),
+            "ema50": features.get("ema50"),
+            "ema200": features.get("ema200"),
+            "ema_trend_up": features.get("ema_trend_up"),
+            "ema_trend_down": features.get("ema_trend_down"),
+            "macd_line": features.get("macd_line"),
+            "macd_signal": features.get("macd_signal"),
+            "macd_hist": features.get("macd_hist"),
+            "macd_cross": features.get("macd_cross"),
+            "adx": features.get("adx"),
+        }
     )
 
-    momentum = _section(
-        "momentum",
+    momentum = _compact(
         {
-            "rsi_6": "rsi_6",
-            "rsi_14": "rsi_14",
-            "stoch_k": "stoch_k",
-            "stoch_d": "stoch_d",
-            "cci": "cci",
-            "momentum_score": "momentum_score",
-        },
+            "rsi": features.get("rsi"),
+            "rsi_zscore": features.get("rsi_zscore"),
+            "stoch_rsi": features.get("stoch_rsi"),
+            "kdj_k": features.get("kdj_k"),
+            "kdj_d": features.get("kdj_d"),
+            "kdj_j": features.get("kdj_j"),
+        }
     )
 
-    volatility = _section(
-        "volatility",
+    volatility = _compact(
         {
-            "atr": "atr",
-            "atr_percent": "atr_percent",
-            "bollinger_upper": "bollinger_upper",
-            "bollinger_middle": "bollinger_middle",
-            "bollinger_lower": "bollinger_lower",
-            "volatility_score": "volatility_score",
-        },
+            "atr": features.get("atr"),
+            "atr_percent": features.get("atr_percent"),
+            "bollinger_upper": features.get("bb_upper"),
+            "bollinger_middle": features.get("bb_middle"),
+            "bollinger_lower": features.get("bb_lower"),
+            "bollinger_position": features.get("bb_position"),
+        }
     )
 
-    volume = _section(
-        "volume",
+    volume = _compact(
         {
-            "volume": "volume",
-            "volume_avg_5d": "volume_avg_5d",
-            "volume_avg_20d": "volume_avg_20d",
-            "volume_score": "volume_score",
-        },
+            "volume": features.get("volume"),
+            "volume_avg_5d": features.get("volume_avg_5d"),
+            "volume_avg_20d": features.get("volume_avg_20d"),
+            "volume_score": features.get("volume_score"),
+        }
     )
 
     pattern_flags = []
@@ -103,13 +81,12 @@ def summarize_indicators(features: Dict[str, Any]) -> Dict[str, Any]:
             if value:
                 pattern_flags.append(key)
 
-    sentiment = _section(
-        "sentiment",
+    sentiment = _compact(
         {
-            "news_score": "news_score",
-            "news_pos": "news_pos",
-            "news_neg": "news_neg",
-        },
+            "news_score": features.get("news_score"),
+            "news_pos": features.get("news_pos"),
+            "news_neg": features.get("news_neg"),
+        }
     )
 
     return {

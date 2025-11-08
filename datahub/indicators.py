@@ -54,6 +54,17 @@ def compute_all(df: pd.DataFrame) -> Dict[str, Any]:
     latest_idx = close.index[-1]
     timestamp = latest_idx if isinstance(latest_idx, datetime) else datetime.now(timezone.utc)
 
+    volume_avg_5d = float(volume.tail(5).mean()) if not volume.tail(5).isna().all() else None
+    volume_avg_20d = float(volume.tail(20).mean()) if not volume.tail(20).isna().all() else None
+    volume_score = None
+    if volume_avg_20d and not np.isnan(volume.iloc[-1]):
+        volume_score = float(volume.iloc[-1] / volume_avg_20d) if volume_avg_20d else None
+
+    atr_value = float(atr.iloc[-1])
+    atr_percent = None
+    if close.iloc[-1]:
+        atr_percent = float(atr_value / close.iloc[-1])
+
     features: Dict[str, Any] = {
         "price": float(close.iloc[-1]),
         "open": float(data["Open"].iloc[-1]),
@@ -85,6 +96,10 @@ def compute_all(df: pd.DataFrame) -> Dict[str, Any]:
         "recent_high": float(close.tail(20).max()),
         "recent_low": float(close.tail(20).min()),
         "timestamp": timestamp.astimezone(timezone.utc).isoformat(),
+        "atr_percent": atr_percent,
+        "volume_avg_5d": volume_avg_5d,
+        "volume_avg_20d": volume_avg_20d,
+        "volume_score": volume_score,
     }
     return features
 

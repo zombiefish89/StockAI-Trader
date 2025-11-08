@@ -32,6 +32,44 @@ from .tushare_api import (
 logger = logging.getLogger(__name__)
 
 
+def normalize_yfinance_symbol(ticker: str) -> str:
+    """将常见 A 股/港股代码转换为 yfinance 可识别的格式。"""
+    if not ticker:
+        return ticker
+    symbol = ticker.strip()
+    upper = symbol.upper()
+
+    if "." in upper:
+        base, suffix = upper.split(".", 1)
+        suffix = suffix.upper()
+        if suffix in {"SS", "SH"}:
+            return f"{base}.SS"
+        if suffix in {"SZ"}:
+            return f"{base}.SZ"
+        if suffix in {"BJ"}:
+            return f"{base}.BJ"
+        if suffix in {"HK"}:
+            return f"{base}.HK"
+        return upper
+
+    if upper.startswith("SH") and len(upper) >= 8:
+        return f"{upper[-6:]}.SS"
+    if upper.startswith("SZ") and len(upper) >= 8:
+        return f"{upper[-6:]}.SZ"
+    if upper.startswith("BJ") and len(upper) >= 8:
+        return f"{upper[-6:]}.BJ"
+
+    if len(upper) == 6 and upper.isdigit():
+        prefix = upper[0]
+        if prefix in {"6", "9", "5"}:
+            return f"{upper}.SS"
+        if prefix in {"0", "2", "3"}:
+            return f"{upper}.SZ"
+        if prefix in {"4", "8"}:
+            return f"{upper}.BJ"
+    return upper
+
+
 class ProviderError(RuntimeError):
     """数据提供方抛出的统一异常。"""
 
@@ -82,8 +120,9 @@ class YFinanceProvider(CandleProvider):
         if end:
             kwargs["end"] = end
 
-        logger.info("使用 yfinance 拉取 %s/%s", ticker, interval)
-        df = yf.download(ticker, **kwargs)
+        symbol = normalize_yfinance_symbol(ticker)
+        logger.info("使用 yfinance 拉取 %s/%s", symbol, interval)
+        df = yf.download(symbol, **kwargs)
         if df is None:
             return pd.DataFrame()
         return df

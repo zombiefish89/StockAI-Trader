@@ -24,6 +24,7 @@ from .providers import (
     ProviderError,
     YFinanceProvider,
     default_providers,
+    normalize_yfinance_symbol,
 )
 from infra.cache_store import cache_manager
 from infra.rate_limit import rate_limiter
@@ -289,7 +290,8 @@ def _download_quote_summary(ticker: str) -> Dict[str, Any]:
         if cn_payload:
             return cn_payload
 
-    ticker_obj = yf.Ticker(ticker)
+    symbol = normalize_yfinance_symbol(ticker)
+    ticker_obj = yf.Ticker(symbol)
     info = _sanitize_payload(ticker_obj.info or {})
     fast_info = getattr(ticker_obj, "fast_info", None)
     if fast_info is not None:

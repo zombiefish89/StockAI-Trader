@@ -34,6 +34,8 @@ except Exception:  # pragma: no cover - LLM 模块缺失
     LLMClient = None  # type: ignore
     LLMNotConfigured = Exception  # type: ignore
 
+from backend.app.api import router as analyze_router
+
 logger = logging.getLogger(__name__)
 
 
@@ -188,6 +190,8 @@ app.add_middleware(
 
 REPORT_DIR = Path("reports")
 DEFAULT_REPORT_LIMIT = 10
+
+app.include_router(analyze_router)
 
 
 @app.get("/healthz")
@@ -442,7 +446,7 @@ async def _run_single_analysis(
     )
 
 
-@app.post("/analyze", response_model=AnalysisResponse)
+@app.post("/analyze/legacy", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest) -> AnalysisResponse:
     ticker = request.ticker.upper()
     return await _run_single_analysis(
