@@ -14,13 +14,35 @@
         label-position="top"
         @submit.prevent="handleSubmit"
       >
-        <el-form-item label="股票代码">
-          <el-input
+        <el-form-item label="股票代码 / 名称">
+          <el-autocomplete
             v-model="symbolInput"
-            placeholder="如 300014 或 AAPL"
+            placeholder="如 茅台、苹果 或 300014"
             clearable
+            :fetch-suggestions="fetchSymbolSuggestions"
+            :debounce="250"
+            value-key="ticker"
+            :trigger-on-focus="false"
+            @select="handleSymbolSelect"
             @keyup.enter="handleSubmit"
-          />
+          >
+            <template #default="{ item }">
+              <div class="flex w-full items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <span class="font-semibold text-slate-900">{{ item.ticker }}</span>
+                  <span
+                    v-if="item.market"
+                    class="rounded-full bg-slate-100 px-2 py-0.5 text-xs uppercase text-slate-600"
+                  >
+                    {{ item.market }}
+                  </span>
+                </div>
+                <div class="truncate text-sm text-slate-600">
+                  {{ item.displayName }}
+                </div>
+              </div>
+            </template>
+          </el-autocomplete>
         </el-form-item>
         <el-form-item label="时间周期">
           <el-select v-model="timeframe" placeholder="选择周期">
@@ -79,6 +101,7 @@
 import { ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useReport } from "../composables/useReport";
+import { useSymbolSearch, type SymbolSuggestion } from "../composables/useSymbolSearch";
 import VerdictBar from "../components/report/VerdictBar.vue";
 import PlanCard from "../components/report/PlanCard.vue";
 import ScenarioTable from "../components/report/ScenarioTable.vue";
@@ -87,10 +110,19 @@ import MarkdownRenderer from "../components/MarkdownRenderer.vue";
 
 const route = useRoute();
 const router = useRouter();
-const { report, loading, error, load } = useReport();
+const { report, loading, error, load, loadFromCache } = useReport();
+const { fetchSuggestions: fetchSymbolSuggestions } = useSymbolSearch({ limit: 15 });
 
 const symbolInput = ref<string>(parseSymbol(route.query.symbol));
 const timeframe = ref<string>(parseTimeframe(route.query.timeframe));
+
+const restored = loadFromCache();
+if (!symbolInput.value && restored?.symbol) {
+  symbolInput.value = restored.symbol;
+}
+if (!route.query.timeframe && restored?.timeframe) {
+  timeframe.value = restored.timeframe;
+}
 
 watch(
   () => [route.query.symbol, route.query.timeframe],
@@ -101,8 +133,8 @@ watch(
     timeframe.value = parsedTimeframe;
     if (parsedSymbol) {
       load(parsedSymbol, parsedTimeframe);
-    } else {
-      load("", parsedTimeframe);
+    } else if (!report.value) {
+      loadFromCache();
     }
   },
   { immediate: true }
@@ -120,6 +152,10 @@ function handleSubmit() {
       timeframe: timeframe.value,
     },
   });
+}
+
+function handleSymbolSelect(item: SymbolSuggestion) {
+  symbolInput.value = item.ticker.toUpperCase();
 }
 
 function parseSymbol(value: unknown): string {

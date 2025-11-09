@@ -1,0 +1,74 @@
+[
+  {
+    "ticker": "600519.SH",
+    "display_name": "贵州茅台",
+    "name_cn": "贵州茅台",
+    "name_en": "Kweichow Moutai",
+    "market": "cn",
+    "exchange": "SH",
+    "aliases": ["茅台", "贵州茅台", "Moutai", "Kweichow"],
+    "pinyin_full": "guizhou maotai",
+    "pinyin_abbr": "gzmt",
+    "rank": 1
+  },
+  {
+    "ticker": "300750.SZ",
+    "display_name": "宁德时代",
+    "name_cn": "宁德时代",
+    "name_en": "CATL",
+    "market": "cn",
+    "exchange": "SZ",
+    "aliases": ["宁德时代", "CATL", "Contemporary Amperex"],
+    "pinyin_full": "ningde shidai",
+    "pinyin_abbr": "ndsd",
+    "rank": 2
+  },
+  {
+    "ticker": "300014.SZ",
+    "display_name": "亿纬锂能",
+    "name_cn": "亿纬锂能",
+    "name_en": "EVE Energy",
+    "market": "cn",
+    "exchange": "SZ",
+    "aliases": ["亿纬锂能", "EVE Energy"],
+    "pinyin_full": "yiwei lineng",
+    "pinyin_abbr": "ywln",
+    "rank": 3
+  },
+  {
+    "ticker": "AAPL",
+    "display_name": "Apple Inc.",
+    "name_cn": "苹果公司",
+    "name_en": "Apple Inc.",
+    "market": "us",
+    "exchange": "NASDAQ",
+    "aliases": ["苹果", "Apple", "Apple Inc"],
+    "pinyin_full": "ping guo",
+    "pinyin_abbr": "pg",
+    "rank": 4
+  },
+  {
+    "ticker": "00700.HK",
+    "display_name": "腾讯控股",
+    "name_cn": "腾讯控股",
+    "name_en": "Tencent Holdings",
+    "market": "hk",
+    "exchange": "HKEX",
+    "aliases": ["腾讯", "Tencent", "Tencent Holdings", "0700"],
+    "pinyin_full": "teng xun kong gu",
+    "pinyin_abbr": "txkg",
+    "rank": 5
+  },
+  {
+    "ticker": "01810.HK",
+    "display_name": "小米集团",
+    "name_cn": "小米集团",
+    "name_en": "Xiaomi Corp",
+    "market": "hk",
+    "exchange": "HKEX",
+    "aliases": ["小米", "Xiaomi"],
+    "pinyin_full": "xiao mi",
+    "pinyin_abbr": "xm",
+    "rank": 6
+  }
+]

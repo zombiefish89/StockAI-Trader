@@ -39,6 +39,20 @@ from backend.app.api import router as analyze_router
 logger = logging.getLogger(__name__)
 
 
+def _load_cors_origins() -> List[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS")
+    if not raw:
+        return [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    if raw.strip() == "*":
+        return ["*"]
+    items = [part.strip() for part in raw.split(",")]
+    return [item for item in items if item]
+
+
 class AnalysisRequest(BaseModel):
     ticker: str = Field(..., description="股票代码，例如 AAPL 或 600519.SS")
     timeframe: str = Field("1d", description="分析时间粒度，比如 1m / 5m / 1h / 1d")
@@ -176,14 +190,13 @@ app = FastAPI(
     description="AI 股票助手 v1.0 分析接口",
 )
 
+cors_origins = _load_cors_origins()
+allow_all_origins = cors_origins == ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

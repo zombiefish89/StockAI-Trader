@@ -105,6 +105,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import axios from "axios";
+import { API_BASE } from "../config/api";
 
 interface OpportunityCandidate {
   ticker: string;
@@ -124,7 +125,6 @@ interface OpportunityResponse {
   candidates: OpportunityCandidate[];
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 const form = reactive({
   timeframe: "1d",

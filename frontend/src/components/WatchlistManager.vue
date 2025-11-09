@@ -23,18 +23,40 @@
 
     <el-form class="max-w-lg" @submit.prevent="addSymbol">
       <el-form-item label="添加股票">
-        <el-input
-          v-model="newSymbol"
-          placeholder="输入股票代码并回车添加"
-          clearable
-          @keyup.enter="addSymbol"
-        >
-          <template #append>
-            <el-button type="primary" :loading="adding" @click="addSymbol" class="whitespace-nowrap">
-              添加
-            </el-button>
-          </template>
-        </el-input>
+        <div class="flex w-full gap-3">
+          <el-autocomplete
+            v-model="newSymbol"
+            class="flex-1"
+            placeholder="输入股票代码或名称"
+            clearable
+            :debounce="250"
+            :fetch-suggestions="fetchSymbolSuggestions"
+            value-key="ticker"
+            :trigger-on-focus="false"
+            @select="handleSymbolPicked"
+            @keyup.enter="addSymbol"
+          >
+            <template #default="{ item }">
+              <div class="flex w-full items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <span class="font-semibold text-slate-900">{{ item.ticker }}</span>
+                  <span
+                    v-if="item.market"
+                    class="rounded-full bg-slate-100 px-2 py-0.5 text-xs uppercase text-slate-600"
+                  >
+                    {{ item.market }}
+                  </span>
+                </div>
+                <div class="truncate text-sm text-slate-600">
+                  {{ item.displayName }}
+                </div>
+              </div>
+            </template>
+          </el-autocomplete>
+          <el-button type="primary" :loading="adding" @click="addSymbol" class="whitespace-nowrap">
+            添加
+          </el-button>
+        </div>
       </el-form-item>
     </el-form>
 
@@ -157,8 +179,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import axios from "axios";
+import { API_BASE } from "../config/api";
 
 import type { AnalysisResultPayload } from "./AnalysisResult.vue";
+import { useSymbolSearch, type SymbolSuggestion } from "../composables/useSymbolSearch";
 
 interface WatchlistResponse {
   symbols: string[];
@@ -176,7 +200,6 @@ interface BatchAnalysisResponse {
   ai_summary?: string | null;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 const watchlist = ref<string[]>([]);
 const updatedAt = ref<string>("");
@@ -194,6 +217,8 @@ const batchRows = computed(() => {
   if (!batchData.value) return [];
   return Object.values(batchData.value.results).map((item) => item);
 });
+
+const { fetchSuggestions: fetchSymbolSuggestions } = useSymbolSearch({ limit: 20 });
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -246,6 +271,10 @@ async function addSymbol() {
   } finally {
     adding.value = false;
   }
+}
+
+function handleSymbolPicked(item: SymbolSuggestion) {
+  newSymbol.value = item.ticker.toUpperCase();
 }
 
 async function removeSymbol(symbol: string) {

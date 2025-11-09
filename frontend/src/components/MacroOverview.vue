@@ -299,6 +299,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import axios from "axios";
+import { API_BASE } from "../config/api";
 
 interface SectorLeader {
   name?: string;
@@ -346,7 +347,6 @@ interface MacroOverviewResponse {
   news: NewsItem[];
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 const generatedAt = ref<string>("");
 const overview = ref("");

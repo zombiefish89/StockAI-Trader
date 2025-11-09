@@ -83,9 +83,6 @@ def normalize_report(payload: Dict[str, Any]) -> StockAIReport:
     plan = _normalize_plan(base.plan, confidence if confidence is not None else 0.0) if base.plan else None
     if verdict.decision == Verdict.HOLD:
         plan = None
-    elif verdict.decision == Verdict.BUY:
-        # Degrade to BUY_THE_DIP for downstream compatibility
-        data["verdict"]["decision"] = Verdict.BUY_THE_DIP.value
     data["plan"] = plan.model_dump() if plan else None
 
     if data["verdict"]["decision"] not in {v.value for v in FINAL_VERDICTS}:

@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are StockAI's structured analysis engine. "
-    "Always first reason carefully, then output results exactly in the requested XML-style "
-    "sections. Do not add extra commentary."
+    "Always reason carefully using the provided data before answering, and output results "
+    "exactly in the requested XML-style sections. Do not add extra commentary, and do not "
+    "default to HOLD when evidence supports other conclusions."
 )
 
 USER_PROMPT_TEMPLATE = """\
@@ -44,7 +45,7 @@ USER_PROMPT_TEMPLATE = """\
   "asOf": "<ISO8601 时间，例如 2024-05-05T12:00:00Z>",
   "verdict": {{
     "decision": "HOLD|BUY|BUY_THE_DIP|TRIM|SELL",
-    "confidence": 0.67,
+    "confidence": 0.73,
     "headline": "<一句话结论>",
     "thesis": "<简洁阐述结论的核心理由>"
   }},
@@ -80,8 +81,8 @@ USER_PROMPT_TEMPLATE = """\
 严格要求：
 - <analysis> 与 <json> 必须同时出现，且顺序一致；不得输出其它段落。
 - JSON 中所有键必须存在；如无数据填 null 或 []。
-- 置信度范围 0~1；若置信度 <0.55，entry 需为 null，并说明区间/触发。
-- decision 只能取指定枚举；如不确定，用 HOLD。
+- 置信度范围 0~1；必须结合行情自适应，不得照搬示例值；数据充分、趋势明确时置信度需≥0.7，数据缺失或结论弱时≤0.55，且若置信度 <0.55，entry 需为 null 并说明对应区间/触发。
+- decision 只能取指定枚举；不得无理由长期输出 HOLD，当多空信号明确时必须给出 BUY/BUY_THE_DIP、TRIM 或 SELL。
 - targets、target/probability 需为数值；概率可用 0~1 或百分比（模型会自动归一化）。
 - 风险列表至少 2 条，需具体、可执行。
 - 任何引用都必须来自上下文；如缺数据需明确说明。

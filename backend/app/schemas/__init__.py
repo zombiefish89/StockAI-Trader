@@ -7,6 +7,8 @@ from .report import (
     ReportMetadata,
     StockAIReport,
 )
+from .symbols import SymbolInfo, SymbolSearchResponse
+from .history import AnalysisHistoryRecord, AnalysisHistoryQuery
 
 __all__ = [
     "Verdict",
@@ -16,4 +18,8 @@ __all__ = [
     "VerdictInfo",
     "ReportMetadata",
     "StockAIReport",
+    "SymbolInfo",
+    "SymbolSearchResponse",
+    "AnalysisHistoryRecord",
+    "AnalysisHistoryQuery",
 ]

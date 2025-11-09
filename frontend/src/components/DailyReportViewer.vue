@@ -302,6 +302,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import axios from "axios";
+import { API_BASE } from "../config/api";
 
 type HighlightItem =
   | string
@@ -398,7 +399,6 @@ interface ReportDetail extends ReportSummary {
   >;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 const summaries = ref<ReportSummary[]>([]);
 const currentReport = ref<ReportDetail | null>(null);

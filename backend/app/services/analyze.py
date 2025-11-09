@@ -10,6 +10,7 @@ import logging
 from backend.app.core.llm_adapter import generate_report_json
 from backend.app.core.normalize import normalize_report
 from backend.app.schemas.report import StockAIReport
+from backend.app.services.history import history_store
 from datahub.fetcher import get_quote_summary, get_latest_candles  # type: ignore
 from datahub.indicators import compute_all  # type: ignore
 from datahub.macro import get_macro_snapshot  # type: ignore
@@ -158,6 +159,8 @@ async def analyze_stock(ticker: str, timeframe: str = "1d") -> StockAIReport:
     )
 
     normalized = normalize_report(raw_payload)
+
+    await history_store.save(normalized, context)
 
     latency = int((time.perf_counter() - start_time) * 1000)
     metadata = normalized.metadata.model_copy(update={"latencyMs": latency})

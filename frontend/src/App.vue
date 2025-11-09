@@ -44,6 +44,12 @@
           >
             每日报告
           </el-menu-item>
+          <el-menu-item
+            index="/history"
+            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
+          >
+            分析历史
+          </el-menu-item>
         </el-menu>
       </el-aside>
 

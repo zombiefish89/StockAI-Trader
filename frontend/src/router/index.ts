@@ -35,6 +35,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import("../views/DailyReportView.vue"),
     meta: { label: "日报" },
   },
+  {
+    path: "/history",
+    name: "history",
+    component: () => import("../views/AnalysisHistoryView.vue"),
+    meta: { label: "分析历史" },
+  },
 ];
 
 const router = createRouter({

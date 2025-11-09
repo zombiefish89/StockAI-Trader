@@ -42,6 +42,7 @@ from .tushare_api import (
     fetch_top_list,
     fetch_index_daily as ts_fetch_index_daily,
     get_latest_trade_date,
+    get_pro,
     select_leaders,
 )
 
@@ -76,6 +77,13 @@ TUSHARE_INDEX_CODES: Dict[str, str] = {
     "sz399006": "399006.SZ",
 }
 
+GLOBAL_TUSHARE_CODES: Dict[str, str] = {
+    "sp500": "SP500",
+    "nasdaq": "IXIC",
+    "dowjones": "DJI",
+    "hsci": "HSI",
+}
+
 
 @dataclass
 class _CacheEntry:
@@ -96,7 +104,7 @@ _MACRO_CACHE: Optional[_CacheEntry] = None
 def _macro_cache_key() -> str:
     return "macro::snapshot"
 
-MACRO_SNAPSHOT_TTL = int(os.getenv("MACRO_SNAPSHOT_TTL", "300"))
+MACRO_SNAPSHOT_TTL = int(os.getenv("MACRO_SNAPSHOT_TTL", "7200"))
 
 
 def _get_from_cache(cache: Dict[str, _CacheEntry], key: str, ttl: int) -> Optional[Any]:
@@ -204,6 +212,14 @@ async def get_index_snapshot(
             )
             if df is not None and not df.empty:
                 source_label = "tushare"
+
+        if (df is None or df.empty) and name in GLOBAL_TUSHARE_CODES:
+            df = await asyncio.to_thread(
+                _fetch_global_index_from_tushare,
+                GLOBAL_TUSHARE_CODES[name],
+            )
+            if df is not None and not df.empty:
+                source_label = "tushare_global"
 
         if (df is None or df.empty) and code:
             try:
@@ -483,6 +499,41 @@ def _fetch_index_from_akshare(name: str) -> Optional[pd.DataFrame]:
     except Exception as exc:  # pragma: no cover
         logger.warning("AkShare 指数 %s 拉取失败: %s", symbol, exc)
     return None
+
+
+def _fetch_global_index_from_tushare(code: str) -> Optional[pd.DataFrame]:
+    try:
+        pro = get_pro()
+    except TushareUnavailable:
+        return None
+    try:
+        df = pro.index_global(ts_code=code, limit=200)
+    except Exception as exc:  # pragma: no cover - 网络异常
+        logger.warning("Tushare index_global %s 拉取失败: %s", code, exc)
+        return None
+    if df is None or df.empty:
+        return None
+    data = df.copy()
+    if "trade_date" not in data.columns:
+        return None
+    data["trade_date"] = pd.to_datetime(data["trade_date"], errors="coerce")
+    data = data.dropna(subset=["trade_date"])
+    if data.empty:
+        return None
+    data = data.sort_values("trade_date")
+    data = data.set_index("trade_date")
+    rename_map = {
+        "close": "Close",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "vol": "Volume",
+        "volume": "Volume",
+    }
+    available = {k: v for k, v in rename_map.items() if k in data.columns}
+    if available:
+        data = data.rename(columns=available)
+    return data
 
 
 def _find_column(columns: Iterable[Any], keywords: Sequence[str]) -> Optional[Any]:
