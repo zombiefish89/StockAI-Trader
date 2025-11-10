@@ -10,7 +10,11 @@ function computeDefaultBase() {
   if (typeof window === "undefined") {
     return `http://localhost:${DEFAULT_BACKEND_PORT}`;
   }
-  const { protocol, hostname } = window.location;
+  const { protocol, hostname, port } = window.location;
+  const isStandardPort = !port || port === "80" || port === "443";
+  if (isStandardPort) {
+    return `${protocol}//${hostname}/api`;
+  }
   return `${protocol}//${hostname}:${DEFAULT_BACKEND_PORT}`;
 }
 
