@@ -8,6 +8,7 @@ AI 股票助手，帮助普通投资者在 1 分钟内获得结构化的交易�
 - 若需要禁用 AkShare 美股备选源，可设置环境变量 `AKSHARE_DISABLE_US=1`。
 - 宏观指数拉取默认缓存 30 分钟，若 yfinance 限速会自动回退到 AkShare 指数数据。
 - 如配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，宏观/指数数据会在 yfinance/AkShare 失败后继续尝试对应接口。
+- 若担心单个 Tushare token 限流，可设置 `TUSHARE_TOKEN_POOL=tokenA,tokenB`（逗号分隔，按顺序自动切换），并保留 `TUSHARE_TOKEN` 作为兜底。
 
 ### AI 总结（可选）
 - 将 `.env.example` 复制为 `.env`，填入所需的 API Key；项目启动时会自动加载 `.env`（依赖 `python-dotenv`）。
