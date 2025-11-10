@@ -19,4 +19,5 @@ def _build_query(
 
 @router.get("/analysis", response_model=list[AnalysisHistoryRecord])
 async def list_analysis_history(params: AnalysisHistoryQuery = Depends(_build_query)) -> list[AnalysisHistoryRecord]:
-    return await history_store.query(params)
+    records = await history_store.query(params)
+    return [record.model_dump(by_alias=True) for record in records]

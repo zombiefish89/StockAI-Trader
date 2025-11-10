@@ -1,0 +1,26 @@
+# Copy this file to /etc/systemd/system/stockai-trader.service and adjust paths.
+
+[Unit]
+Description=StockAI Trader FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stockai
+Group=stockai
+WorkingDirectory=/opt/stockai/StockAI-Trader
+EnvironmentFile=/opt/stockai/.env
+ExecStart=/opt/stockai/.venv/bin/gunicorn -k uvicorn.workers.UvicornWorker api:app --bind 0.0.0.0:8000 --workers 2 --timeout 120
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_LEVEL=info
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

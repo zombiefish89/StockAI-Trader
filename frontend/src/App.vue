@@ -15,6 +15,24 @@
           @select="handleMenuSelect"
         >
           <el-menu-item
+            index="/stock"
+            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
+          >
+            个股分析
+          </el-menu-item>
+          <el-menu-item
+            index="/history"
+            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
+          >
+            分析历史
+          </el-menu-item>
+          <el-menu-item
+            index="/reports"
+            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
+          >
+            每日报告
+          </el-menu-item>
+          <el-menu-item
             index="/macro"
             class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
           >
@@ -32,28 +50,12 @@
           >
             机会扫描
           </el-menu-item>
-          <el-menu-item
-            index="/stock"
-            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
-          >
-            个股分析
-          </el-menu-item>
-          <el-menu-item
-            index="/reports"
-            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
-          >
-            每日报告
-          </el-menu-item>
-          <el-menu-item
-            index="/history"
-            class="rounded-xl text-slate-600 transition [&.is-active]:bg-slate-100 [&.is-active]:text-slate-900"
-          >
-            分析历史
-          </el-menu-item>
         </el-menu>
       </el-aside>
 
-      <el-container class="flex-1 bg-gradient-to-br from-slate-50 via-white to-indigo-50">
+      <el-container
+        class="flex-1 bg-gradient-to-br from-slate-50 via-white to-indigo-50"
+      >
         <el-header class="px-6 pb-4 pt-8 md:px-12 md:pb-6 md:pt-12">
           <div class="space-y-2">
             <h1 class="text-2xl font-semibold text-slate-900 md:text-3xl">
