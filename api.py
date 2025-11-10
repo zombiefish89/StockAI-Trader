@@ -205,6 +205,7 @@ REPORT_DIR = Path("reports")
 DEFAULT_REPORT_LIMIT = 10
 
 app.include_router(analyze_router)
+app.include_router(analyze_router, prefix="/api")
 
 
 @app.get("/healthz")
